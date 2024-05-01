@@ -311,13 +311,10 @@ void cond_init(struct condition *cond)
 // [Amborsia] 세마포어의 값을 들고와서 쓰레드로의 접근
 bool synch_less_priority_sema(const struct list_elem *a_, const struct list_elem *b_, void *aux UNUSED)
 {
-	struct semaphore_elem *sema_a = list_entry(a_, struct semaphore_elem, elem);
 	struct semaphore_elem *sema_b = list_entry(b_, struct semaphore_elem, elem);
-	struct list *waiters_a = &(sema_a->semaphore.waiters);
 	struct list *waiters_b = &(sema_b->semaphore.waiters);
-	struct thread *root_a = list_entry(list_begin(waiters_a), struct thread, elem);
 	struct thread *root_b = list_entry(list_begin(waiters_b), struct thread, elem);
-	return root_a->priority > root_b->priority;
+	return thread_current()->priority > root_b->priority;
 }
 
 /* Atomically releases LOCK and waits for COND to be signaled by
@@ -376,7 +373,7 @@ void cond_signal(struct condition *cond, struct lock *lock UNUSED)
 	if (!list_empty(&cond->waiters))
 	{
 		// [Amborsia]sort를 통해서 waiters를 정렬
-		list_sort(&cond->waiters, synch_less_priority_sema, 0);
+		// list_sort(&cond->waiters, synch_less_priority_sema, 0);
 		sema_up(&list_entry(list_pop_front(&cond->waiters),
 							struct semaphore_elem, elem)
 					 ->semaphore);
