@@ -72,6 +72,7 @@ static void init_thread(struct thread *, const char *name, int priority);
 static void do_schedule(int status);
 static void schedule(void);
 static tid_t allocate_tid(void);
+struct thread *get_child(int pid);
 
 /* Returns true if T appears to point to a valid thread. */
 #define is_thread(t) ((t) != NULL && (t)->magic == THREAD_MAGIC)
@@ -243,7 +244,7 @@ tid_t thread_create(const char *name, int priority,
 #ifdef USERPROG
 	t->fdt = palloc_get_multiple(PAL_ZERO, 3); // for multi-oom test
 #endif
-
+	list_push_back(&thread_current()->child_list, &t->child_elem);
 	/* Call the kernel_thread if it scheduled.
 	 * Note) rdi is 1st argument, and rsi is 2nd argument. */
 	t->tf.rip = (uintptr_t)kernel_thread;
@@ -303,6 +304,20 @@ void thread_unblock(struct thread *t)
 	/* 우선순위 크기순으로 내림차순정렬 */
 	list_insert_ordered(&ready_list, &t->elem, priority_larger, READY_LIST);
 	intr_set_level(old_level);
+}
+
+struct thread *get_child(int pid)
+{
+	struct thread *cur = thread_current();
+	struct list *fl = &cur->child_list;
+	struct list_elem *start_elem;
+	for (start_elem = list_begin(fl); start_elem != list_end(fl); start_elem = list_next(start_elem))
+	{
+		struct thread *t = list_entry(start_elem, struct thread, child_elem);
+		if (t->tid == pid)
+			return t;
+	}
+	return NULL;
 }
 
 /* 잠든 스레드를 sleep_list에 삽입하는 함수 */
@@ -391,24 +406,24 @@ tid_t thread_tid(void)
    returns to the caller. */
 void thread_exit(void)
 {
+	struct list_elem *child;
 	ASSERT(!intr_context());
 
 #ifdef USERPROG
 	process_exit();
-	struct list_elem *curr = &thread_current()->fork_elem;
-	while (curr->prev != NULL)
-		curr = curr->prev;
-	struct thread *parent = list_entry(curr, struct thread, fork_list.head);
-	parent->exit_status = thread_current()->exit_status;
-	sema_up(&parent->wait_sema);
-	list_remove(&thread_current()->fork_elem);
-	
 #endif
-
-	/* Just set our status to dying and schedule another process.
-	   We will be destroyed during the call to schedule_tail(). */
+	for (child = list_begin(&thread_current()->child_list);
+		 child != list_end(&thread_current()->child_list);)
+	{
+		struct thread *t = list_entry(child, struct thread, child_elem);
+		child = list_remove(child);
+		sema_up(&t->exit_sema);
+	}
+	sema_up(&thread_current()->wait_sema);
+	sema_down(&thread_current()->exit_sema);
 	intr_disable();
-	do_schedule(THREAD_DYING);
+	thread_current()->status = THREAD_DYING;
+	schedule();
 	NOT_REACHED();
 }
 
@@ -602,6 +617,10 @@ init_thread(struct thread *t, const char *name, int priority)
 	t->exit_status = 123456789;
 	lock_init(&t->fork_lock);
 	cond_init(&t->fork_cond);
+
+	sema_init(&t->exit_sema, 0);
+	list_init(&t->child_list);
+	sema_init(&t->load_sema, 0);
 	sema_init(&t->wait_sema, 0);
 
 	if (thread_mlfqs)
@@ -755,10 +774,6 @@ do_schedule(int status)
 			list_entry(list_pop_front(&destruction_req), struct thread, elem);
 #ifdef USERPROG
 		palloc_free_multiple(victim->fdt, 3);
-		pml4_destroy(victim->pml4);
-		for (int i = 3; i <= victim->fdt_maxi; i++)
-			if (victim->fdt[i] != NULL)
-				file_close(victim->fdt[i]);
 #endif
 		palloc_free_page(victim);
 	}

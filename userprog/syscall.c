@@ -73,10 +73,9 @@ void syscall_init(void)
 	lock_init(&filesys_lock);
 }
 
-
 /* The main system call interface */
 void syscall_handler(struct intr_frame *f UNUSED)
-{	
+{
 	int syscall = f->R.rax;
 	if ((5 <= syscall) && (syscall <= 13))
 		lock_acquire(&filesys_lock);
@@ -89,11 +88,13 @@ void syscall_handler(struct intr_frame *f UNUSED)
 		exit(f->R.rdi);
 		break;
 	case SYS_FORK:
-		copy_register(&thread_current()->tf, f); 
+		// copy_register(&thread_current()->tf, f);
+		memcpy(&thread_current()->parent_if, f, sizeof(struct intr_frame));
 		bool succ_fork = fork(f->R.rdi);
 		f->R.rax = succ_fork;
 		break;
 	case SYS_EXEC:
+		bool succ_exec = exec(f->R.rdi);
 		break;
 	case SYS_WAIT:
 		pid_t pid = wait(f->R.rdi);
@@ -151,7 +152,7 @@ void check_address(void *uaddr)
 		exit(-1);
 }
 
-void copy_register(struct intr_frame *target, struct intr_frame *source) 
+void copy_register(struct intr_frame *target, struct intr_frame *source)
 {
 	memcpy(&target->R.r15, &source->R.r15, sizeof(uint64_t));
 	memcpy(&target->R.r14, &source->R.r14, sizeof(uint64_t));
@@ -178,42 +179,37 @@ void exit(int status)
 }
 
 pid_t fork(const char *thread_name)
-{	
-	check_address(thread_name);
-	struct thread *parent = thread_current();
-
-	pid_t child_tid = process_fork(thread_name);
-	thread_current()->child_thread = NULL;
-	if (thread_current()->tid != child_tid){ // include TID_ERROR
-		lock_acquire(&parent->child_thread->fork_lock);
-		cond_signal(&parent->child_thread->fork_cond, &parent->child_thread->fork_lock);
-		lock_release(&parent->child_thread->fork_lock);
-		return child_tid;
-	}
-	return 0;
+{
+	return process_fork(thread_name);
 }
 
 int exec(const char *file)
 {
+	check_address(file);
+	char *temp_cpy;
+	temp_cpy = palloc_get_page(0);
+	if (temp_cpy == NULL)
+	{
+		exit(-1);
+	}
 
+	strlcpy(temp_cpy, file, PGSIZE);
+	if (process_exec(temp_cpy) == -1)
+	{
+		exit(-1);
+	}
 }
 
-int wait(pid_t pid) {
-	struct thread *curr = thread_current();
-	struct list *fl = &curr->fork_list;
-	struct list_elem *start_elem;
-	if (curr->exit_status != 123456789)
-		return curr->exit_status;
+int wait(pid_t pid)
+{
+	// struct thread *curr = thread_current();
 
-	for (start_elem = list_begin(fl); start_elem == list_end(fl); start_elem = list_next(start_elem)) {
-		if (list_entry(start_elem, struct thread, fork_elem)->tid == pid) 
-			break;
-		
-		if (start_elem == list_tail(fl))
-			return -1;
-	}
-	sema_down(&curr->wait_sema);
-	return curr->exit_status;
+	// if (curr->exit_status != 123456789)
+	// 	return curr->exit_status;
+
+	// // sema_down(&curr->wait_sema);
+	// return curr->exit_status;
+	return process_wait(pid);
 }
 
 bool create(const char *file, unsigned initial_size)
@@ -294,7 +290,7 @@ int read(int fd, void *buffer, unsigned length)
 
 	default:
 
-		if (GET_FILE_ETY(cur->fdt,fd) == NULL) // wrong fd
+		if (GET_FILE_ETY(cur->fdt, fd) == NULL) // wrong fd
 			return -1;
 
 		struct file *cur_file = GET_FILE_ETY(cur->fdt, fd);
@@ -373,15 +369,9 @@ unsigned tell(int fd)
 void close(int fd)
 {
 	struct thread *cur = thread_current();
-	ASSERT(3 <= fd);
-	if ((fd < 0) || (fd >= MAX_FD))
+	if ((fd <= 1) || (cur->fdt_maxi <= fd))
 		return;
 
-	struct file *cur_file = GET_FILE_ETY(cur->fdt, fd);
-	if (cur_file == NULL)
-		return;
-
-	file_close(cur_file);
-	free(cur_file);
-	GET_FILE_ETY(cur->fdt, fd) = NULL;
+	file_close(cur->fdt[fd]);
+	cur->fdt[fd] = NULL;
 }

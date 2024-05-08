@@ -110,10 +110,19 @@ struct thread
 	struct lock fork_lock;
 	struct thread *child_thread;
 
-	struct semaphore wait_sema;
 	struct list fork_list;
 	struct list_elem fork_elem;
+
+	int flag;
+	struct semaphore exit_sema;
 	int exit_status;
+	struct semaphore load_sema;
+	struct semaphore wait_sema;
+	struct intr_frame parent_if;
+	struct list child_list;
+	struct list_elem child_elem;
+	struct file *current_file;
+
 #endif
 #ifdef VM
 	/* Table for whole virtual memory owned by thread. */
@@ -204,5 +213,6 @@ int thread_get_recent_cpu(void);
 int thread_get_load_avg(void);
 
 void do_iret(struct intr_frame *tf);
+struct thread *get_child(int pid);
 
 #endif /* threads/thread.h */
