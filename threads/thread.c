@@ -417,7 +417,7 @@ void thread_exit(void)
 		 child != list_end(&thread_current()->child_list); child = list_next(child))
 	{
 		struct thread *t = list_entry(child, struct thread, child_elem);
-		child = list_remove(child);
+		list_remove(child);
 		sema_up(&t->exit_sema);
 	}
 	sema_up(&thread_current()->wait_sema);

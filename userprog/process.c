@@ -138,8 +138,8 @@ duplicate_pte(uint64_t *pte, void *va, void *aux)
 	if (!pml4_set_page(current->pml4, va, newpage, writable))
 	{
 		/* 6. TODO: if fail to insert page, do error handling. */
-		// free(newpage);
-		return false;
+		printf("Failed to map user virtual page to given physical frame\n");
+        return false;
 	}
 	return true;
 }
@@ -185,16 +185,26 @@ __do_fork(void *aux)
 	 * TODO:       the resources of parent.*/
 	if (parent->fdt_maxi == 128)
 		goto error;
+
 	for (int i = 0; i < 128; i++)
-	{
-		struct file *file = parent->fdt[i];
-		if (file == NULL)
-			continue;
-		if (file > 2)
-			file = file_duplicate(file); // 파일 객체를 복제하여 자식 프로세스의 FDT에 저장합니다.
-		current->fdt[i] = file;			 // 복제한 파일 객체를 자식 프로세스의 FDT에 할당합니다.
-	}
-	current->fdt_maxi = parent->fdt_maxi;
+    {
+        struct file *file = parent->fdt[i];
+        if (file == NULL)
+            continue;
+        // if 'file' is already duplicated in child don't duplicate again but share it
+        bool found = false;
+        if (!found)
+        {
+            struct file *new_file;
+            if (file > 2)
+                new_file = file_duplicate(file);
+            else
+                new_file = file;
+            current->fdt[i] = new_file;
+        }
+    }
+    current->fdt_maxi = parent->fdt_maxi;
+
 	sema_up(&current->fork_sema);
 	process_init();
 	/* Finally, switch to the newly created process. */
@@ -333,12 +343,12 @@ void process_exit(void)
 	{
 		close(i);
 	}
-	// palloc_free_multiple(cur->fdt, 3);
+	palloc_free_multiple(cur->fdt, 3);
 	// palloc_free_page(cur->fdt);
 	file_close(cur->current_file);
-	process_cleanup();
 	sema_up(&cur->wait_sema);
 	sema_down(&cur->exit_sema);
+	process_cleanup();
 }
 
 /* Free the current process's resources. */
@@ -477,7 +487,8 @@ load(const char *file_name, struct intr_frame *if_)
 		printf("load: %s: error loading executable\n", file_name);
 		goto done;
 	}
-
+	t->current_file = file;
+	file_deny_write(file);
 	/* Read program headers. */
 	file_ofs = ehdr.e_phoff;
 	for (i = 0; i < ehdr.e_phnum; i++)
@@ -547,8 +558,6 @@ load(const char *file_name, struct intr_frame *if_)
 			break;
 		}
 	}
-	t->current_file = file;
-	file_deny_write(file);
 	/* Set up stack. */
 	if (!setup_stack(if_))
 	{
