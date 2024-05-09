@@ -14,7 +14,7 @@
 #include "filesys/file.h"
 #include "filesys/inode.h"
 #include "devices/disk.h"
-
+#include "threads/palloc.h"
 /* System call.
  *
  * Previously system call services was handled by the interrupt handler
@@ -57,7 +57,6 @@ void seek(int fd, unsigned position);
 unsigned tell(int fd);
 void close(int fd);
 void check_address(void *addr);
-void copy_register(struct intr_frame *target, struct intr_frame *source);
 
 void syscall_init(void)
 {
@@ -88,13 +87,15 @@ void syscall_handler(struct intr_frame *f UNUSED)
 		exit(f->R.rdi);
 		break;
 	case SYS_FORK:
-		// copy_register(&thread_current()->tf, f);
 		memcpy(&thread_current()->parent_if, f, sizeof(struct intr_frame));
-		bool succ_fork = fork(f->R.rdi);
-		f->R.rax = succ_fork;
+		f->R.rax = fork(f->R.rdi);
 		break;
 	case SYS_EXEC:
-		bool succ_exec = exec(f->R.rdi);
+		int succ_exec = exec(f->R.rdi);
+		if (succ_exec == -1)
+		{
+			exit(-1);
+		}
 		break;
 	case SYS_WAIT:
 		pid_t pid = wait(f->R.rdi);
@@ -152,18 +153,6 @@ void check_address(void *uaddr)
 		exit(-1);
 }
 
-void copy_register(struct intr_frame *target, struct intr_frame *source)
-{
-	memcpy(&target->R.r15, &source->R.r15, sizeof(uint64_t));
-	memcpy(&target->R.r14, &source->R.r14, sizeof(uint64_t));
-	memcpy(&target->R.r13, &source->R.r13, sizeof(uint64_t));
-	memcpy(&target->R.r12, &source->R.r12, sizeof(uint64_t));
-	memcpy(&target->R.rbx, &source->R.rbx, sizeof(uint64_t));
-	memcpy(&target->R.rbp, &source->R.rbp, sizeof(uint64_t));
-	memcpy(&target->rsp, &source->rsp, sizeof(uintptr_t));
-	memcpy(&target->rip, &source->rip, sizeof(uintptr_t));
-}
-
 void halt()
 {
 	power_off();
@@ -172,43 +161,36 @@ void halt()
 void exit(int status)
 {
 	struct thread *curr = thread_current();
+	struct thread *child = get_child(curr->tid);
 	curr->exit_status = status;
-	if (strcmp(curr->name, "main"))
-		printf("%s: exit(%d)\n", curr->name, status);
+
+	printf("%s: exit(%d)\n", curr->name, status);
 	thread_exit();
 }
 
 pid_t fork(const char *thread_name)
 {
+	check_address(thread_name);
 	return process_fork(thread_name);
 }
 
 int exec(const char *file)
 {
 	check_address(file);
-	char *temp_cpy;
-	temp_cpy = palloc_get_page(0);
-	if (temp_cpy == NULL)
+
+	char *fn_copy = palloc_get_page(PAL_ZERO);
+	if (!fn_copy)
 	{
 		exit(-1);
 	}
-
-	strlcpy(temp_cpy, file, PGSIZE);
-	if (process_exec(temp_cpy) == -1)
+	strlcpy(fn_copy, file, PGSIZE);
+	if (process_exec(fn_copy) == -1)
 	{
 		exit(-1);
 	}
 }
-
 int wait(pid_t pid)
 {
-	// struct thread *curr = thread_current();
-
-	// if (curr->exit_status != 123456789)
-	// 	return curr->exit_status;
-
-	// // sema_down(&curr->wait_sema);
-	// return curr->exit_status;
 	return process_wait(pid);
 }
 

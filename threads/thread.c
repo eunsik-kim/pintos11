@@ -244,7 +244,7 @@ tid_t thread_create(const char *name, int priority,
 #ifdef USERPROG
 	t->fdt = palloc_get_multiple(PAL_ZERO, 3); // for multi-oom test
 #endif
-	list_push_back(&thread_current()->child_list, &t->child_elem);
+
 	/* Call the kernel_thread if it scheduled.
 	 * Note) rdi is 1st argument, and rsi is 2nd argument. */
 	t->tf.rip = (uintptr_t)kernel_thread;
@@ -262,6 +262,7 @@ tid_t thread_create(const char *name, int priority,
 		t->recent_cpu = thread_current()->recent_cpu;
 		mlfq_cal_priority(t);
 	}
+	list_push_back(&thread_current()->child_list, &t->child_elem);
 
 	/* Add to run queue. */
 	if (t != idle_thread)
@@ -413,7 +414,7 @@ void thread_exit(void)
 	process_exit();
 #endif
 	for (child = list_begin(&thread_current()->child_list);
-		 child != list_end(&thread_current()->child_list);)
+		 child != list_end(&thread_current()->child_list); child = list_next(child))
 	{
 		struct thread *t = list_entry(child, struct thread, child_elem);
 		child = list_remove(child);
@@ -422,8 +423,7 @@ void thread_exit(void)
 	sema_up(&thread_current()->wait_sema);
 	sema_down(&thread_current()->exit_sema);
 	intr_disable();
-	thread_current()->status = THREAD_DYING;
-	schedule();
+	do_schedule(THREAD_DYING);
 	NOT_REACHED();
 }
 
@@ -615,12 +615,10 @@ init_thread(struct thread *t, const char *name, int priority)
 	t->recent_cpu = 0;
 	t->fdt_maxi = 2;
 	t->exit_status = 123456789;
-	lock_init(&t->fork_lock);
-	cond_init(&t->fork_cond);
 
 	sema_init(&t->exit_sema, 0);
 	list_init(&t->child_list);
-	sema_init(&t->load_sema, 0);
+	sema_init(&t->fork_sema, 0);
 	sema_init(&t->wait_sema, 0);
 
 	if (thread_mlfqs)
@@ -631,7 +629,6 @@ init_thread(struct thread *t, const char *name, int priority)
 	t->init_priority = priority;
 	t->wait_on_lock = NULL;
 	list_init(&t->donations);
-	list_init(&t->fork_list);
 }
 
 /* Chooses and returns the next thread to be scheduled.  Should
