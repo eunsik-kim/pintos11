@@ -242,7 +242,10 @@ tid_t thread_create(const char *name, int priority,
 	tid = t->tid = allocate_tid();
 
 #ifdef USERPROG
-	t->fdt = palloc_get_multiple(PAL_ZERO, 3); // for multi-oom test
+	t->fdt = palloc_get_multiple(PAL_ZERO, FDT_PAGES);
+    if (t->fdt == NULL)
+        return TID_ERROR;
+	list_push_back(&thread_current()->child_list, &t->child_elem);
 #endif
 
 	/* Call the kernel_thread if it scheduled.
@@ -262,7 +265,6 @@ tid_t thread_create(const char *name, int priority,
 		t->recent_cpu = thread_current()->recent_cpu;
 		mlfq_cal_priority(t);
 	}
-	list_push_back(&thread_current()->child_list, &t->child_elem);
 
 	/* Add to run queue. */
 	if (t != idle_thread)
@@ -604,8 +606,7 @@ init_thread(struct thread *t, const char *name, int priority)
 	t->priority = priority;
 	t->nice = 0;
 	t->recent_cpu = 0;
-	t->fdt_maxi = 2;
-	t->exit_status = 123456789;
+	t->next_fd = 2;
 
 	sema_init(&t->exit_sema, 0);
 	list_init(&t->child_list);
@@ -760,9 +761,6 @@ do_schedule(int status)
 	{
 		struct thread *victim =
 			list_entry(list_pop_front(&destruction_req), struct thread, elem);
-#ifdef USERPROG
-		palloc_free_multiple(victim->fdt, 3);
-#endif
 		palloc_free_page(victim);
 	}
 	thread_current()->status = status;

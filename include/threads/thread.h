@@ -31,6 +31,9 @@ typedef int tid_t;
 #define PRI_MAX 63			 /* Highest priority. */
 #define MAX_DONATION_LEVEL 8 /* for chain donation_priority */
 
+#define FDT_PAGES 2
+#define FDT_COUNT_LIMIT 128
+
 /* A kernel thread or user process.
  *
  * Each thread structure is stored in its own 4 kB page.  The
@@ -105,7 +108,7 @@ struct thread
 
 	/* system call */
 	struct file **fdt;
-	int fdt_maxi;
+	int next_fd;
 
 	int flag;
 	struct semaphore exit_sema;

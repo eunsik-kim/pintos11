@@ -18,6 +18,7 @@
 #include "threads/mmu.h"
 #include "threads/vaddr.h"
 #include "intrinsic.h"
+#include "userprog/syscall.h"
 
 #ifdef VM
 #include "vm/vm.h"
@@ -139,7 +140,7 @@ duplicate_pte(uint64_t *pte, void *va, void *aux)
 	{
 		/* 6. TODO: if fail to insert page, do error handling. */
 		printf("Failed to map user virtual page to given physical frame\n");
-        return false;
+		return false;
 	}
 	return true;
 }
@@ -183,27 +184,18 @@ __do_fork(void *aux)
 	 * TODO:       in include/filesys/file.h. Note that parent should not return
 	 * TODO:       from the fork() until this function successfully duplicates
 	 * TODO:       the resources of parent.*/
-	if (parent->fdt_maxi == 128)
-		goto error;
 
-	for (int i = 0; i < 128; i++)
+	for (int i = 0; i < FDT_COUNT_LIMIT; i++)
     {
         struct file *file = parent->fdt[i];
         if (file == NULL)
             continue;
-        // if 'file' is already duplicated in child don't duplicate again but share it
-        bool found = false;
-        if (!found)
-        {
-            struct file *new_file;
-            if (file > 2)
-                new_file = file_duplicate(file);
-            else
-                new_file = file;
-            current->fdt[i] = new_file;
-        }
+        if (file > 2)
+            file = file_duplicate(file);
+        current->fdt[i] = file;
     }
-    current->fdt_maxi = parent->fdt_maxi;
+    current->next_fd = parent->next_fd;
+
 
 	sema_up(&current->fork_sema);
 	process_init();
@@ -213,7 +205,6 @@ __do_fork(void *aux)
 		do_iret(&if_);
 	}
 error:
-	current->exit_status = TID_ERROR;
 	sema_up(&current->fork_sema); // fork_sema
 	exit(TID_ERROR);
 }
@@ -323,11 +314,10 @@ int process_wait(tid_t child_tid UNUSED)
 		return -1;
 
 	sema_down(&child->wait_sema);
-	int exit_status = child->exit_status;
 	list_remove(&child->child_elem);
 	sema_up(&child->exit_sema);
 
-	return exit_status;
+	return child->exit_status;
 	// return wait(1);
 	/* XXX: Hint) The pintos exit if process_wait (initd), we recommend you
 	 * XXX:       to add infinite loop here before
@@ -339,14 +329,15 @@ void process_exit(void)
 {
 	struct thread *cur = thread_current();
 	// palloc_free_multiple(cur->fdt, 3);
-	for (int i = 0; i < 128; i++)
+	for (int i = 2; i < FDT_COUNT_LIMIT; i++)
 	{
 		close(i);
 	}
+	palloc_free_multiple(cur->fdt, FDT_PAGES);
 	file_close(cur->current_file);
+	process_cleanup();
 	sema_up(&cur->wait_sema);
 	sema_down(&cur->exit_sema);
-	process_cleanup();
 }
 
 /* Free the current process's resources. */
@@ -795,3 +786,38 @@ setup_stack(struct intr_frame *if_)
 	return success;
 }
 #endif /* VM */
+
+int process_add_file(struct file *f)
+{
+	struct thread *curr = thread_current();
+	struct file **fdt = curr->fdt;
+
+	// limit을 넘지 않는 범위 안에서 빈 자리 탐색
+	while (curr->next_fd < FDT_COUNT_LIMIT && fdt[curr->next_fd])
+		curr->next_fd++;
+	if (curr->next_fd >= FDT_COUNT_LIMIT)
+		return -1;
+	fdt[curr->next_fd] = f;
+
+	return curr->next_fd;
+}
+
+struct file *process_get_file(int fd)
+{
+	struct thread *curr = thread_current();
+	struct file **fdt = curr->fdt;
+	/* 파일 디스크립터에 해당하는 파일 객체를 리턴 */
+	/* 없을 시 NULL 리턴 */
+	if (fd < 2 || fd >= FDT_COUNT_LIMIT)
+		return NULL;
+	return fdt[fd];
+}
+
+void process_close_file(int fd)
+{
+	struct thread *curr = thread_current();
+	struct file **fdt = curr->fdt;
+	if (fd < 2 || fd >= FDT_COUNT_LIMIT)
+		return NULL;
+	fdt[fd] = NULL;
+}

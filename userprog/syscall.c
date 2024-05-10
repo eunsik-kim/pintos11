@@ -28,7 +28,6 @@
 #define MSR_LSTAR 0xc0000082		/* Long mode SYSCALL target */
 #define MSR_SYSCALL_MASK 0xc0000084 /* Mask for the eflags */
 #define MAX_STDOUT (1 << 9)
-#define MAX_FD 192
 #define GET_FILE_ETY(fdt, fd) (*((fdt) + (fd)))
 
 /* system call */
@@ -189,6 +188,7 @@ int exec(const char *file)
 		exit(-1);
 	}
 }
+
 int wait(pid_t pid)
 {
 	return process_wait(pid);
@@ -220,15 +220,15 @@ int open(const char *file)
 	// initialize
 	struct thread *cur = thread_current();
 	int fd;
-	for (fd = 3; fd < MAX_FD; fd++)
+	for (fd = 3; fd < FDT_COUNT_LIMIT; fd++)
 	{
 		if (GET_FILE_ETY(cur->fdt, fd) == NULL)
 		{
 			GET_FILE_ETY(cur->fdt, fd) = file_entity;
-			cur->fdt_maxi = (cur->fdt_maxi < fd) ? fd : cur->fdt_maxi;
+			cur->next_fd = (cur->next_fd < fd) ? fd : cur->next_fd;
 			break;
 		}
-		ASSERT(fd < MAX_FD);
+		ASSERT(fd < FDT_COUNT_LIMIT);
 	}
 	return fd;
 }
@@ -236,7 +236,7 @@ int open(const char *file)
 int filesize(int fd)
 {
 	struct thread *cur = thread_current();
-	ASSERT((3 <= fd) && (fd < MAX_FD));
+	ASSERT((3 <= fd) && (fd < FDT_COUNT_LIMIT));
 
 	return file_length(GET_FILE_ETY(cur->fdt, fd));
 }
@@ -247,7 +247,7 @@ int filesize(int fd)
  */
 int read(int fd, void *buffer, unsigned length)
 {
-	if ((fd < 0) || (fd >= MAX_FD))
+	if ((fd < 0) || (fd >= FDT_COUNT_LIMIT))
 		return -1;
 
 	if (length == 0) // not read
@@ -292,7 +292,7 @@ int read(int fd, void *buffer, unsigned length)
  */
 int write(int fd, const void *buffer, unsigned length)
 {
-	if ((fd <= 0) || (fd >= MAX_FD)) // no bytes could be written at all
+	if ((fd <= 0) || (fd >= FDT_COUNT_LIMIT)) // no bytes could be written at all
 		return 0;
 
 	/* fd == 0 => stdin, fd == 1 => stdout, fd == 2 => stderr */
@@ -333,7 +333,7 @@ int write(int fd, const void *buffer, unsigned length)
 void seek(int fd, unsigned position)
 {
 	struct thread *cur = thread_current();
-	ASSERT((3 <= fd) && (fd < MAX_FD));
+	ASSERT((3 <= fd) && (fd < FDT_COUNT_LIMIT));
 
 	struct file *cur_file = GET_FILE_ETY(cur->fdt, fd);
 	file_seek(cur_file, position);
@@ -342,7 +342,7 @@ void seek(int fd, unsigned position)
 unsigned tell(int fd)
 {
 	struct thread *cur = thread_current();
-	ASSERT((3 <= fd) && (fd < MAX_FD));
+	ASSERT((3 <= fd) && (fd < FDT_COUNT_LIMIT));
 
 	struct file *cur_file = GET_FILE_ETY(cur->fdt, fd);
 	return file_tell(cur_file);
@@ -351,7 +351,7 @@ unsigned tell(int fd)
 void close(int fd)
 {
 	struct thread *cur = thread_current();
-	if ((fd <= 1) || (cur->fdt_maxi <= fd))
+	if ((fd <= 1) || (cur->next_fd <= fd))
 		return;
 
 	file_close(cur->fdt[fd]);
