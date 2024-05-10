@@ -28,7 +28,6 @@
 #define MSR_LSTAR 0xc0000082		/* Long mode SYSCALL target */
 #define MSR_SYSCALL_MASK 0xc0000084 /* Mask for the eflags */
 #define MAX_STDOUT (1 << 9)
-#define GET_FILE_ETY(fdt, fd) (*((fdt) + (fd)))
 
 /* system call */
 struct lock filesys_lock;
@@ -75,8 +74,6 @@ void syscall_init(void)
 void syscall_handler(struct intr_frame *f UNUSED)
 {
 	int syscall = f->R.rax;
-	if ((5 <= syscall) && (syscall <= 13))
-		lock_acquire(&filesys_lock);
 	switch (syscall)
 	{
 	case SYS_HALT:
@@ -138,8 +135,6 @@ void syscall_handler(struct intr_frame *f UNUSED)
 		printf("We don't implemented yet.");
 		break;
 	}
-	if ((5 <= syscall) && (syscall <= 13))
-		lock_release(&filesys_lock);
 }
 /*
  * 요청된 user 가상주소값이 1.NULL이 아닌지 2. kernel영역을 참조하는지
@@ -220,11 +215,11 @@ int open(const char *file)
 	// initialize
 	struct thread *cur = thread_current();
 	int fd;
-	for (fd = 3; fd < FDT_COUNT_LIMIT; fd++)
+	for (fd = 2; fd < FDT_COUNT_LIMIT; fd++)
 	{
-		if (GET_FILE_ETY(cur->fdt, fd) == NULL)
+		if (cur->fdt[fd] == NULL)
 		{
-			GET_FILE_ETY(cur->fdt, fd) = file_entity;
+			cur->fdt[fd] = file_entity;
 			cur->next_fd = (cur->next_fd < fd) ? fd : cur->next_fd;
 			break;
 		}
@@ -236,9 +231,9 @@ int open(const char *file)
 int filesize(int fd)
 {
 	struct thread *cur = thread_current();
-	ASSERT((3 <= fd) && (fd < FDT_COUNT_LIMIT));
+	ASSERT((2 <= fd) && (fd < FDT_COUNT_LIMIT));
 
-	return file_length(GET_FILE_ETY(cur->fdt, fd));
+	return file_length(cur->fdt[fd]);
 }
 
 /*
@@ -267,20 +262,20 @@ int read(int fd, void *buffer, unsigned length)
 		}
 		break;
 	case 1:
-	case 2:
 		return -1; // wrong fd
 
 	default:
 
-		if (GET_FILE_ETY(cur->fdt, fd) == NULL) // wrong fd
+		if (cur->fdt[fd] == NULL) // wrong fd
 			return -1;
 
-		struct file *cur_file = GET_FILE_ETY(cur->fdt, fd);
+		struct file *cur_file = cur->fdt[fd];
 		if (cur_file->pos == inode_length(cur_file->inode)) // end of file
 			return 0;
-
+		lock_acquire(&filesys_lock);
 		if ((bytes_read = file_read(cur_file, buffer, length)) == 0) // could not read
 			return -1;
+		lock_release(&filesys_lock);
 		break;
 	}
 	return bytes_read;
@@ -301,6 +296,8 @@ int write(int fd, const void *buffer, unsigned length)
 	int bytes_write = length;
 	switch (fd)
 	{
+	case 0:
+		break;
 	case 1: // stdout: lock을 걸고 buffer 전체를 입력
 		int iter_cnt = length / MAX_STDOUT + 1;
 		int less_size;
@@ -313,17 +310,14 @@ int write(int fd, const void *buffer, unsigned length)
 		}
 		break;
 
-	case 2: // stderr: (stdout과 다르게 어떻게 해야할지 모르겠음)한글자씩 작성할때마다 lock이 걸림
-		while (length-- > 0)
-			putchar(buffer++);
-		break;
-
 	default: // file growth is not implemented by the basic file system
-		if (GET_FILE_ETY(cur->fdt, fd) == NULL)
+		if (cur->fdt[fd] == NULL)
 			return 0;
 
-		struct file *cur_file = GET_FILE_ETY(cur->fdt, fd);
+		struct file *cur_file = cur->fdt[fd];
+		lock_acquire(&filesys_lock);
 		bytes_write = file_write(cur_file, buffer, length);
+		lock_release(&filesys_lock);
 		break;
 	}
 	return bytes_write;
@@ -333,18 +327,18 @@ int write(int fd, const void *buffer, unsigned length)
 void seek(int fd, unsigned position)
 {
 	struct thread *cur = thread_current();
-	ASSERT((3 <= fd) && (fd < FDT_COUNT_LIMIT));
+	ASSERT((2 <= fd) && (fd < FDT_COUNT_LIMIT));
 
-	struct file *cur_file = GET_FILE_ETY(cur->fdt, fd);
+	struct file *cur_file = cur->fdt[fd];
 	file_seek(cur_file, position);
 }
 
 unsigned tell(int fd)
 {
 	struct thread *cur = thread_current();
-	ASSERT((3 <= fd) && (fd < FDT_COUNT_LIMIT));
+	ASSERT((2 <= fd) && (fd < FDT_COUNT_LIMIT));
 
-	struct file *cur_file = GET_FILE_ETY(cur->fdt, fd);
+	struct file *cur_file = cur->fdt[fd];
 	return file_tell(cur_file);
 }
 

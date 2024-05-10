@@ -72,7 +72,6 @@ static void init_thread(struct thread *, const char *name, int priority);
 static void do_schedule(int status);
 static void schedule(void);
 static tid_t allocate_tid(void);
-struct thread *get_child(int pid);
 
 /* Returns true if T appears to point to a valid thread. */
 #define is_thread(t) ((t) != NULL && (t)->magic == THREAD_MAGIC)
@@ -307,20 +306,6 @@ void thread_unblock(struct thread *t)
 	/* 우선순위 크기순으로 내림차순정렬 */
 	list_insert_ordered(&ready_list, &t->elem, priority_larger, READY_LIST);
 	intr_set_level(old_level);
-}
-
-struct thread *get_child(int pid)
-{
-	struct thread *cur = thread_current();
-	struct list *fl = &cur->child_list;
-	struct list_elem *start_elem;
-	for (start_elem = list_begin(fl); start_elem != list_end(fl); start_elem = list_next(start_elem))
-	{
-		struct thread *t = list_entry(start_elem, struct thread, child_elem);
-		if (t->tid == pid)
-			return t;
-	}
-	return NULL;
 }
 
 /* 잠든 스레드를 sleep_list에 삽입하는 함수 */

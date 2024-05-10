@@ -241,9 +241,13 @@ int process_exec(void *f_name)
 	}
 	/* 파싱 끝 */
 
+	lock_acquire(&filesys_lock);
 	success = load(file_name, &_if);
-	if (!success)
+	lock_release(&filesys_lock);
+	if (!success) {
+		palloc_free_page(file_name);
 		return -1;
+	}
 	/* 패싱 시작 */
 	size_t total_size = 0;
 	for (int i = temp_cnt - 1; i >= 0; i--)
@@ -787,6 +791,21 @@ setup_stack(struct intr_frame *if_)
 }
 #endif /* VM */
 
+struct thread *get_child(int pid)
+{
+	struct thread *cur = thread_current();
+	struct list *fl = &cur->child_list;
+	struct list_elem *start_elem;
+	for (start_elem = list_begin(fl); start_elem != list_end(fl); start_elem = list_next(start_elem))
+	{
+		struct thread *t = list_entry(start_elem, struct thread, child_elem);
+		if (t->tid == pid)
+			return t;
+	}
+	return NULL;
+}
+
+// 파일 객체에 대한 파일 디스크립터를 생성하는 함수
 int process_add_file(struct file *f)
 {
 	struct thread *curr = thread_current();
@@ -802,6 +821,7 @@ int process_add_file(struct file *f)
 	return curr->next_fd;
 }
 
+// 파일 객체를 검색하는 함수
 struct file *process_get_file(int fd)
 {
 	struct thread *curr = thread_current();
@@ -813,6 +833,7 @@ struct file *process_get_file(int fd)
 	return fdt[fd];
 }
 
+// 파일 디스크립터 테이블에서 파일 객체를 제거하는 함수
 void process_close_file(int fd)
 {
 	struct thread *curr = thread_current();
