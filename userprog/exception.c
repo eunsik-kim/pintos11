@@ -87,7 +87,7 @@ kill (struct intr_frame *f) {
 					thread_name (), f->vec_no, intr_name (f->vec_no));
 #ifdef USERPROG
 			check_address(f->R.rax);
-			thread_current()->exit_status = -1;
+			//thread_current()->exit_status = -1;
 #endif
 			intr_dump_frame (f);
 			thread_exit ();
@@ -152,7 +152,7 @@ page_fault (struct intr_frame *f) {
 
 	/* Count page faults. */
 	page_fault_cnt++;
-
+	exit(-1);
 	/* If the fault is true fault, show info and exit. */
 	printf ("Page fault at %p: %s error %s page in %s context.\n",
 			fault_addr,

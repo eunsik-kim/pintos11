@@ -139,7 +139,8 @@ duplicate_pte(uint64_t *pte, void *va, void *aux)
 	if (!pml4_set_page(current->pml4, va, newpage, writable))
 	{
 		/* 6. TODO: if fail to insert page, do error handling. */
-		printf("Failed to map user virtual page to given physical frame\n");
+		palloc_free_page(newpage);
+		//printf("Failed to map user virtual page to given physical frame\n");
 		return false;
 	}
 	return true;
@@ -162,7 +163,7 @@ __do_fork(void *aux)
 	/* 1. Read the cpu context to local stack. */
 	memcpy(&if_, parent_if, sizeof(struct intr_frame));
 	if_.R.rax = 0;
-
+	palloc_free_page(current->pml4);
 	/* 2. Duplicate PT */
 	current->pml4 = pml4_create();
 	if (current->pml4 == NULL)
@@ -190,7 +191,7 @@ __do_fork(void *aux)
         struct file *file = parent->fdt[i];
         if (file == NULL)
             continue;
-        if (file > 2)
+        if (file > 1)
             file = file_duplicate(file);
         current->fdt[i] = file;
     }
@@ -241,9 +242,9 @@ int process_exec(void *f_name)
 	}
 	/* 파싱 끝 */
 
-	lock_acquire(&filesys_lock);
+	// lock_acquire(&filesys_lock);
 	success = load(file_name, &_if);
-	lock_release(&filesys_lock);
+	// lock_release(&filesys_lock);
 	if (!success) {
 		palloc_free_page(file_name);
 		return -1;
