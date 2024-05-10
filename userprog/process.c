@@ -343,8 +343,6 @@ void process_exit(void)
 	{
 		close(i);
 	}
-	palloc_free_multiple(cur->fdt, 3);
-	// palloc_free_page(cur->fdt);
 	file_close(cur->current_file);
 	sema_up(&cur->wait_sema);
 	sema_down(&cur->exit_sema);
