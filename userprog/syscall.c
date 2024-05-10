@@ -221,11 +221,12 @@ int open(const char *file)
 		{
 			cur->fdt[fd] = file_entity;
 			cur->next_fd = (cur->next_fd < fd) ? fd : cur->next_fd;
-			break;
+			return fd;
 		}
 		ASSERT(fd < FDT_COUNT_LIMIT);
 	}
-	return fd;
+	free(file_entity);
+	return -1;
 }
 
 int filesize(int fd)
