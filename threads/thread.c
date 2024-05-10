@@ -242,7 +242,11 @@ tid_t thread_create(const char *name, int priority,
 	tid = t->tid = allocate_tid();
 
 #ifdef USERPROG
-	t->fdt = palloc_get_multiple(PAL_ZERO, 3); // for multi-oom test
+	t->fdt = palloc_get_multiple(PAL_ZERO, FDT_PAGES); // for multi-oom test
+	if (t->fdt == NULL)
+	{
+		return TID_ERROR;
+	}
 #endif
 
 	/* Call the kernel_thread if it scheduled.
@@ -407,22 +411,16 @@ tid_t thread_tid(void)
    returns to the caller. */
 void thread_exit(void)
 {
-	struct list_elem *child;
+
 	ASSERT(!intr_context());
 
 #ifdef USERPROG
 	process_exit();
 #endif
-	for (child = list_begin(&thread_current()->child_list);
-		 child != list_end(&thread_current()->child_list); child = list_next(child))
-	{
-		struct thread *t = list_entry(child, struct thread, child_elem);
-		child = list_remove(child);
-		sema_up(&t->exit_sema);
-	}
-	sema_up(&thread_current()->wait_sema);
-	sema_down(&thread_current()->exit_sema);
+
 	intr_disable();
+	// thread_current()->status = THREAD_DYING;
+	// schedule();
 	do_schedule(THREAD_DYING);
 	NOT_REACHED();
 }
@@ -770,7 +768,7 @@ do_schedule(int status)
 		struct thread *victim =
 			list_entry(list_pop_front(&destruction_req), struct thread, elem);
 #ifdef USERPROG
-		palloc_free_multiple(victim->fdt, 3);
+		// palloc_free_multiple(victim->fdt, FDT_PAGES);
 #endif
 		palloc_free_page(victim);
 	}

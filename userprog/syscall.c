@@ -1,7 +1,7 @@
 #include "userprog/syscall.h"
 #include <stdio.h>
 #include <syscall-nr.h>
-#include "threads/interrupt.h"
+#include "threads/interrupt.h"`
 #include "threads/thread.h"
 #include "threads/loader.h"
 #include "userprog/gdt.h"
@@ -15,6 +15,8 @@
 #include "filesys/inode.h"
 #include "devices/disk.h"
 #include "threads/palloc.h"
+#include "threads/synch.h"
+#include "userprog/process.h"
 /* System call.
  *
  * Previously system call services was handled by the interrupt handler
@@ -171,7 +173,7 @@ void exit(int status)
 pid_t fork(const char *thread_name)
 {
 	check_address(thread_name);
-	return process_fork(thread_name);
+	return process_fork(thread_name, &thread_current()->parent_if);
 }
 
 int exec(const char *file)
@@ -213,12 +215,18 @@ bool remove(const char *file)
 int open(const char *file)
 {
 	check_address(file);
+
+	struct thread *cur = thread_current();
+	if (cur->fdt_maxi >= MAX_FD)
+	{
+		return -1;
+	}
+
 	struct file *file_entity = filesys_open(file);
 	if (file_entity == NULL) // wrong file name or not in disk (initialized from arg -p)
 		return -1;
 
 	// initialize
-	struct thread *cur = thread_current();
 	int fd;
 	for (fd = 3; fd < MAX_FD; fd++)
 	{
@@ -226,10 +234,10 @@ int open(const char *file)
 		{
 			GET_FILE_ETY(cur->fdt, fd) = file_entity;
 			cur->fdt_maxi = (cur->fdt_maxi < fd) ? fd : cur->fdt_maxi;
-			break;
+			return fd;
 		}
-		ASSERT(fd < MAX_FD);
 	}
+	cur->fdt_maxi = fd;
 	return fd;
 }
 

@@ -83,7 +83,7 @@ initd(void *f_name)
 tid_t process_fork(const char *name, struct intr_frame *if_ UNUSED)
 {
 	struct thread *cur = thread_current();
-
+	// printf(" before ---- name: %s, tid = %d\n", thread_name(), thread_current()->tid);
 	tid_t tid = thread_create(name, PRI_DEFAULT, __do_fork, cur);
 	if (tid == TID_ERROR)
 	{
@@ -92,7 +92,8 @@ tid_t process_fork(const char *name, struct intr_frame *if_ UNUSED)
 
 	struct thread *child = get_child(tid);
 	sema_down(&child->fork_sema);
-	if (child->exit_status == -1)
+	// printf(" after sema down ---- name: %s, tid = %d\n", thread_name(), thread_current()->tid);
+	if (child->exit_status == TID_ERROR)
 	{
 		return TID_ERROR;
 	}
@@ -138,7 +139,7 @@ duplicate_pte(uint64_t *pte, void *va, void *aux)
 	if (!pml4_set_page(current->pml4, va, newpage, writable))
 	{
 		/* 6. TODO: if fail to insert page, do error handling. */
-		// free(newpage);
+		palloc_free_page(newpage);
 		return false;
 	}
 	return true;
@@ -162,6 +163,8 @@ __do_fork(void *aux)
 	memcpy(&if_, parent_if, sizeof(struct intr_frame));
 	if_.R.rax = 0;
 
+	palloc_free_page(current->pml4);
+
 	/* 2. Duplicate PT */
 	current->pml4 = pml4_create();
 	if (current->pml4 == NULL)
@@ -183,28 +186,26 @@ __do_fork(void *aux)
 	 * TODO:       in include/filesys/file.h. Note that parent should not return
 	 * TODO:       from the fork() until this function successfully duplicates
 	 * TODO:       the resources of parent.*/
-	if (parent->fdt_maxi == 128)
-		goto error;
-	for (int i = 0; i < 128; i++)
+	// if (parent->fdt_maxi == FDT_COUNT_LIMIT)
+	// 	goto error;
+	for (int i = 0; i < FDT_COUNT_LIMIT; i++)
 	{
 		struct file *file = parent->fdt[i];
 		if (file == NULL)
 			continue;
-		if (file > 2)
-			file = file_duplicate(file); // 파일 객체를 복제하여 자식 프로세스의 FDT에 저장합니다.
-		current->fdt[i] = file;			 // 복제한 파일 객체를 자식 프로세스의 FDT에 할당합니다.
+		current->fdt[i] = file_duplicate(file); // 파일 객체를 복제하여 자식 프로세스의 FDT에 저장합니다.
 	}
 	current->fdt_maxi = parent->fdt_maxi;
-	sema_up(&current->fork_sema);
-	process_init();
+	// process_init();
 	/* Finally, switch to the newly created process. */
 	if (succ)
 	{
+		sema_up(&current->fork_sema);
 		do_iret(&if_);
 	}
 error:
 	current->exit_status = TID_ERROR;
-	sema_up(&current->fork_sema); // fork_sema
+	sema_up(&current->fork_sema);
 	exit(TID_ERROR);
 }
 
@@ -328,13 +329,21 @@ int process_wait(tid_t child_tid UNUSED)
 void process_exit(void)
 {
 	struct thread *cur = thread_current();
-	// palloc_free_multiple(cur->fdt, 3);
-	for (int i = 0; i < 128; i++)
+	// palloc_free_multiple(cur->fdt,FDT_PAGES);
+	for (int i = 2; i < FDT_COUNT_LIMIT; i++)
 	{
-		close(i);
+		if (cur->fdt[i])
+			file_close(cur->fdt[i]);
 	}
-	// palloc_free_multiple(cur->fdt, 3);
-	// palloc_free_page(cur->fdt);
+	struct list_elem *child;
+	for (child = list_begin(&thread_current()->child_list); // childs 순회
+		 child != list_end(&thread_current()->child_list); child = list_next(child))
+	{
+		struct thread *t = list_entry(child, struct thread, child_elem);
+		// child = list_remove(child);
+		sema_up(&t->exit_sema);
+	}
+	palloc_free_multiple(cur->fdt, FDT_PAGES);
 	file_close(cur->current_file);
 	process_cleanup();
 	sema_up(&cur->wait_sema);

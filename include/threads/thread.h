@@ -23,13 +23,16 @@ enum thread_status
 /* Thread identifier type.
    You can redefine this to whatever type you like. */
 typedef int tid_t;
-#define TID_ERROR ((tid_t)-1) /* Error value for tid_t. */
+#define TID_ERROR ((tid_t) - 1) /* Error value for tid_t. */
 
 /* Thread priorities. */
 #define PRI_MIN 0			 /* Lowest priority. */
 #define PRI_DEFAULT 31		 /* Default priority. */
 #define PRI_MAX 63			 /* Highest priority. */
 #define MAX_DONATION_LEVEL 8 /* for chain donation_priority */
+
+#define FDT_PAGES 3
+#define FDT_COUNT_LIMIT 192
 
 /* A kernel thread or user process.
  *
