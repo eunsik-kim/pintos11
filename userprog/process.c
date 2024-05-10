@@ -290,14 +290,6 @@ int process_exec(void *f_name)
 	NOT_REACHED();
 }
 
-void push_register(struct intr_frame _if, char *temp, char filename)
-{
-	if (filename != ' ')
-	{
-		_if.R.rdi = &filename;
-	}
-}
-
 /* Waits for thread TID to die and returns its exit status.  If
  * it was terminated by the kernel (i.e. killed due to an
  * exception), returns -1.  If TID is invalid or if it was not a

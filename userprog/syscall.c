@@ -78,8 +78,8 @@ void syscall_init(void)
 void syscall_handler(struct intr_frame *f UNUSED)
 {
 	int syscall = f->R.rax;
-	if ((5 <= syscall) && (syscall <= 13))
-		lock_acquire(&filesys_lock);
+	// if ((5 <= syscall) && (syscall <= 13))
+	// 	lock_acquire(&filesys_lock);
 	switch (syscall)
 	{
 	case SYS_HALT:
@@ -141,8 +141,8 @@ void syscall_handler(struct intr_frame *f UNUSED)
 		printf("We don't implemented yet.");
 		break;
 	}
-	if ((5 <= syscall) && (syscall <= 13))
-		lock_release(&filesys_lock);
+	// if ((5 <= syscall) && (syscall <= 13))
+	// 	lock_release(&filesys_lock);
 }
 /*
  * 요청된 user 가상주소값이 1.NULL이 아닌지 2. kernel영역을 참조하는지
@@ -286,9 +286,10 @@ int read(int fd, void *buffer, unsigned length)
 		struct file *cur_file = GET_FILE_ETY(cur->fdt, fd);
 		if (cur_file->pos == inode_length(cur_file->inode)) // end of file
 			return 0;
-
+		lock_acquire(&filesys_lock);
 		if ((bytes_read = file_read(cur_file, buffer, length)) == 0) // could not read
 			return -1;
+		lock_release(&filesys_lock);
 		break;
 	}
 	return bytes_read;
@@ -331,7 +332,9 @@ int write(int fd, const void *buffer, unsigned length)
 			return 0;
 
 		struct file *cur_file = GET_FILE_ETY(cur->fdt, fd);
+		lock_acquire(&filesys_lock);
 		bytes_write = file_write(cur_file, buffer, length);
+		lock_release(&filesys_lock);
 		break;
 	}
 	return bytes_write;
