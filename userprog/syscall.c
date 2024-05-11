@@ -1,4 +1,5 @@
 #include "userprog/syscall.h"
+#include "userprog/process.h"
 #include <stdio.h>
 #include <syscall-nr.h>
 #include "threads/interrupt.h"
@@ -164,7 +165,7 @@ void exit(int status)
 pid_t fork(const char *thread_name)
 {
 	check_address(thread_name);
-	return process_fork(thread_name);
+	return process_fork(thread_name, &thread_current()->parent_if);
 }
 
 int exec(const char *file)
@@ -233,10 +234,10 @@ int open(const char *file)
 
 int filesize(int fd)
 {
-	struct thread *cur = thread_current();
-	ASSERT((2 <= fd) && (fd < FDT_COUNT_LIMIT));
-
-	return file_length(cur->fdt[fd]);
+	struct file *file = process_get_file(fd);
+	if (file == NULL)
+		return -1;
+	return file_length(file);
 }
 
 /*
