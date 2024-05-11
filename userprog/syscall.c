@@ -190,8 +190,11 @@ int wait(pid_t pid)
 
 bool create(const char *file, unsigned initial_size)
 {
+	lock_acquire(&filesys_lock);
 	check_address(file);
-	return filesys_create(file, initial_size);
+	bool success = filesys_create(file, initial_size);
+	lock_release(&filesys_lock);
+	return success;
 }
 
 bool remove(const char *file)
