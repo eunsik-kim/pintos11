@@ -211,25 +211,18 @@ bool remove(const char *file)
 int open(const char *file)
 {
 	check_address(file);
-	struct file *file_entity = filesys_open(file);
-	if (file_entity == NULL) // wrong file name or not in disk (initialized from arg -p)
-		return -1;
-
-	// initialize
-	struct thread *cur = thread_current();
-	int fd;
-	for (fd = 2; fd < FDT_COUNT_LIMIT; fd++)
+	lock_acquire(&filesys_lock);
+	struct file *file_get = filesys_open(file);
+	if (file_get == NULL)
 	{
-		if (cur->fdt[fd] == NULL)
-		{
-			cur->fdt[fd] = file_entity;
-			cur->next_fd = (cur->next_fd < fd) ? fd : cur->next_fd;
-			return fd;
-		}
-		ASSERT(fd < FDT_COUNT_LIMIT);
+		lock_release(&filesys_lock);
+		return -1;
 	}
-	free(file_entity);
-	return -1;
+	int fd = process_add_file(file_get);
+	if (fd == -1)
+		file_close(file_get);
+	lock_release(&filesys_lock);
+	return fd;
 }
 
 int filesize(int fd)
