@@ -247,7 +247,8 @@ int read(int fd, void *buffer, unsigned length)
 
 	check_address(buffer);
 	struct thread *cur = thread_current();
-	int bytes_read = length;
+	int bytes_read = 0;
+	lock_acquire(&filesys_lock);
 	switch (fd)
 	{
 	case 0:
@@ -256,22 +257,29 @@ int read(int fd, void *buffer, unsigned length)
 		{
 			byte = input_getc();	  // console 입력을 받아
 			*(char *)buffer++ = byte; // 1byte씩 저장
+			bytes_read++;
 		}
+		lock_release(&filesys_lock);
 		break;
 	case 1:
+		lock_release(&filesys_lock);
 		return -1; // wrong fd
 
 	default:
+		struct file *cur_file = process_get_file(fd);
 
-		if (cur->fdt[fd] == NULL) // wrong fd
+		if (cur_file == NULL) {
+			lock_release(&filesys_lock);
 			return -1;
-
-		struct file *cur_file = cur->fdt[fd];
-		if (cur_file->pos == inode_length(cur_file->inode)) // end of file
+		}
+		if (cur_file->pos >= inode_length(cur_file->inode)) {
+			lock_release(&filesys_lock);
 			return 0;
-		lock_acquire(&filesys_lock);
-		if ((bytes_read = file_read(cur_file, buffer, length)) == 0) // could not read
+		}
+		if ((bytes_read = file_read(cur_file, buffer, length)) == 0) {
+			lock_release(&filesys_lock);
 			return -1;
+		}
 		lock_release(&filesys_lock);
 		break;
 	}
@@ -320,14 +328,12 @@ int write(int fd, const void *buffer, unsigned length)
 	return bytes_write;
 }
 
-/* 파일 크기가 넘어가는 position인 경우 write할 때 자동으로 0으로 채워지는지 확인해야됨*/
 void seek(int fd, unsigned position)
 {
-	struct thread *cur = thread_current();
-	ASSERT((2 <= fd) && (fd < FDT_COUNT_LIMIT));
-
-	struct file *cur_file = cur->fdt[fd];
-	file_seek(cur_file, position);
+	struct file *file = process_get_file(fd);
+	if (file == NULL)
+		return;
+	file_seek(file, position);
 }
 
 unsigned tell(int fd)
