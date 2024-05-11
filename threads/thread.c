@@ -242,8 +242,10 @@ tid_t thread_create(const char *name, int priority,
 
 #ifdef USERPROG
 	t->fdt = palloc_get_multiple(PAL_ZERO, FDT_PAGES);
-    if (t->fdt == NULL)
+    if (t->fdt == NULL) {
+		palloc_free_page(t);
         return TID_ERROR;
+	}
 	list_push_back(&thread_current()->child_list, &t->child_elem);
 #endif
 

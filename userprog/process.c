@@ -242,9 +242,9 @@ int process_exec(void *f_name)
 	}
 	/* 파싱 끝 */
 
-	// lock_acquire(&filesys_lock);
+	lock_acquire(&filesys_lock);
 	success = load(file_name, &_if);
-	// lock_release(&filesys_lock);
+	lock_release(&filesys_lock);
 	if (!success) {
 		palloc_free_page(file_name);
 		return -1;
