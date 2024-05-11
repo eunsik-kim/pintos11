@@ -333,13 +333,11 @@ int process_wait(tid_t child_tid UNUSED)
 void process_exit(void)
 {
 	struct thread *cur = thread_current();
-	// palloc_free_multiple(cur->fdt, 3);
 	struct list_elem *child;
     for (child = list_begin(&thread_current()->child_list); // childs 순회
          child != list_end(&thread_current()->child_list); child = list_next(child))
     {
         struct thread *t = list_entry(child, struct thread, child_elem);
-        // child = list_remove(child);
         sema_up(&t->exit_sema);
     }
 	for (int i = 2; i < FDT_COUNT_LIMIT; i++)

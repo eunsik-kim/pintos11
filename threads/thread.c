@@ -394,7 +394,6 @@ tid_t thread_tid(void)
    returns to the caller. */
 void thread_exit(void)
 {
-	struct list_elem *child;
 	ASSERT(!intr_context());
 
 #ifdef USERPROG

@@ -64,7 +64,7 @@ pdpe_walk (uint64_t *pdpe, const uint64_t va, int create) {
 uint64_t *
 pml4e_walk (uint64_t *pml4e, const uint64_t va, int create) {
 	uint64_t *pte = NULL;
-	int idx = PML4 (va);
+	int idx = PML4 (va); //pml4e의 index를 구한다.
 	int allocated = 0;
 	if (pml4e) {
 		uint64_t *pdpe = (uint64_t *) pml4e[idx];
