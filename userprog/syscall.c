@@ -338,19 +338,17 @@ void seek(int fd, unsigned position)
 
 unsigned tell(int fd)
 {
-	struct thread *cur = thread_current();
-	ASSERT((2 <= fd) && (fd < FDT_COUNT_LIMIT));
-
-	struct file *cur_file = cur->fdt[fd];
-	return file_tell(cur_file);
+	struct file *file = process_get_file(fd);
+	if (file == NULL)
+		return;
+	return file_tell(file);
 }
 
 void close(int fd)
 {
-	struct thread *cur = thread_current();
-	if ((fd <= 1) || (cur->next_fd <= fd))
+	struct file *file = process_get_file(fd);
+	if (file == NULL)
 		return;
-
-	file_close(cur->fdt[fd]);
-	cur->fdt[fd] = NULL;
+	file_close(file);
+	process_close_file(fd);
 }
