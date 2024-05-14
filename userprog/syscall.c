@@ -118,6 +118,7 @@ void syscall_handler(struct intr_frame *f UNUSED)
 		f->R.rax = size;
 		break;
 	case SYS_READ:
+		printf("test\n");
 		int byte_read = read(f->R.rdi, f->R.rsi, f->R.rdx);
 		f->R.rax = byte_read;
 		break;
@@ -159,7 +160,6 @@ void halt()
 void exit(int status)
 {
 	struct thread *curr = thread_current();
-	struct thread *child = get_child(curr->tid);
 	curr->exit_status = status;
 
 	printf("%s: exit(%d)\n", curr->name, status);

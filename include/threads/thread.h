@@ -104,21 +104,17 @@ struct thread
 
 #ifdef USERPROG
 	/* Owned by userprog/process.c. */
-	uint64_t *pml4; /* Page map level 4 */
-
-	/* system call */
-	struct file **fdt;
-	int fdt_maxi;
-
-	int flag;
 	struct semaphore exit_sema;
-	int exit_status;
 	struct semaphore fork_sema;
 	struct semaphore wait_sema;
+	struct file **fdt;
+	struct file *current_file;
 	struct intr_frame parent_if;
 	struct list child_list;
 	struct list_elem child_elem;
-	struct file *current_file;
+	uint64_t *pml4; /* Page map level 4 */
+	int fdt_maxi;
+	int exit_status;
 
 #endif
 #ifdef VM

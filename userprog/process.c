@@ -83,7 +83,6 @@ initd(void *f_name)
 tid_t process_fork(const char *name, struct intr_frame *if_ UNUSED)
 {
 	struct thread *cur = thread_current();
-	// printf(" before ---- name: %s, tid = %d\n", thread_name(), thread_current()->tid);
 	tid_t tid = thread_create(name, PRI_DEFAULT, __do_fork, cur);
 	if (tid == TID_ERROR)
 	{
@@ -92,7 +91,6 @@ tid_t process_fork(const char *name, struct intr_frame *if_ UNUSED)
 
 	struct thread *child = get_child(tid);
 	sema_down(&child->fork_sema);
-	// printf(" after sema down ---- name: %s, tid = %d\n", thread_name(), thread_current()->tid);
 	if (child->exit_status == TID_ERROR)
 	{
 		return TID_ERROR;
@@ -186,8 +184,6 @@ __do_fork(void *aux)
 	 * TODO:       in include/filesys/file.h. Note that parent should not return
 	 * TODO:       from the fork() until this function successfully duplicates
 	 * TODO:       the resources of parent.*/
-	// if (parent->fdt_maxi == FDT_COUNT_LIMIT)
-	// 	goto error;
 	for (int i = 0; i < FDT_COUNT_LIMIT; i++)
 	{
 		struct file *file = parent->fdt[i];
@@ -196,7 +192,6 @@ __do_fork(void *aux)
 		current->fdt[i] = file_duplicate(file); // 파일 객체를 복제하여 자식 프로세스의 FDT에 저장합니다.
 	}
 	current->fdt_maxi = parent->fdt_maxi;
-	// process_init();
 	/* Finally, switch to the newly created process. */
 	if (succ)
 	{
@@ -321,7 +316,6 @@ int process_wait(tid_t child_tid UNUSED)
 void process_exit(void)
 {
 	struct thread *cur = thread_current();
-	// palloc_free_multiple(cur->fdt,FDT_PAGES);
 	for (int i = 2; i < FDT_COUNT_LIMIT; i++)
 	{
 		if (cur->fdt[i])
@@ -332,7 +326,6 @@ void process_exit(void)
 		 child != list_end(&thread_current()->child_list); child = list_next(child))
 	{
 		struct thread *t = list_entry(child, struct thread, child_elem);
-		// child = list_remove(child);
 		sema_up(&t->exit_sema);
 	}
 	palloc_free_multiple(cur->fdt, FDT_PAGES);
