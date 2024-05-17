@@ -33,9 +33,9 @@ uninit_new (struct page *page, void *va, vm_initializer *init,
 		.operations = &uninit_ops,
 		.va = va,
 		.frame = NULL, /* no frame for now */
+		.type = type,
 		.uninit = (struct uninit_page) {
 			.init = init,
-			.type = type,
 			.aux = aux,
 			.page_initializer = initializer,
 		}
@@ -52,7 +52,7 @@ uninit_initialize (struct page *page, void *kva) {
 	void *aux = uninit->aux;
 
 	/* TODO: You may need to fix this function. */
-	return uninit->page_initializer (page, uninit->type, kva) &&
+	return uninit->page_initializer (page, page->type, kva) &&
 		(init ? init (page, aux) : true);
 }
 
@@ -65,4 +65,6 @@ uninit_destroy (struct page *page) {
 	struct uninit_page *uninit UNUSED = &page->uninit;
 	/* TODO: Fill this function.
 	 * TODO: If you don't have anything to do, just return. */
+	ftb_delete_frame(page);
+	return;
 }

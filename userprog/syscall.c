@@ -15,6 +15,7 @@
 #include "filesys/inode.h"
 #include "devices/disk.h"
 #include "threads/palloc.h"
+#include "vm/vm.h"
 
 /* System call.
  *
@@ -80,6 +81,7 @@ bool delete_fety_fdt_in_page(struct func_params *params, struct thread *t);
 struct fpage *add_page_to_list(struct list_elem *elem, struct list *ls);
 bool find_file_in_page(struct func_params *params, struct list *ls);
 void update_offset(struct fpage *table, int i, call_type type);
+void write_to_read_page(void *uaddr);
 
 void syscall_init(void)
 {
@@ -163,13 +165,25 @@ void syscall_handler(struct intr_frame *f)
 
 /*
  * 요청된 user 가상주소값이 1.NULL이 아닌지 2. kernel영역을 참조하는지
- * 3. 물리주소내에 mapping하는지 확인하여 위반하는경우 종료
+ * 3. 물리주소내에 mapping하는지 확인하여 위반하는경우, 4. lazy load인경우 제외하고 종료
  */
 void check_address(void *uaddr)
 {
 	struct thread *cur = thread_current();
-	if (uaddr == NULL || is_kernel_vaddr(uaddr) || pml4_get_page(cur->pml4, uaddr) == NULL)
+	if (uaddr == NULL || is_kernel_vaddr(uaddr) || (pml4_get_page(cur->pml4, uaddr) == NULL)) {
+		if (!vm_claim_page(uaddr))	// lazy load한 page 중 fake uaddr인 경우가 존재
+			exit(-1);
+	}
+}
+
+/* 읽기전용 페이지에 쓰려고 하는경우 exit 호출 */
+void write_to_read_page(void *uaddr)
+{	
+#ifdef VM	
+	struct page *find_page = spt_find_page(&thread_current()->spt, uaddr);
+	if (find_page && !(find_page->type & VM_WRITABLE))
 		exit(-1);
+#endif
 }
 
 /* list를 순회하며 pid를 가지는 thread return, 못찾으면 NULL return */
@@ -211,9 +225,16 @@ bool find_file_in_page(struct func_params *params, struct list *ls)
 struct fpage *add_page_to_list(struct list_elem *elem, struct list *ls) {
 	struct fpage *newpage = list_entry(elem, struct fpage, elem);
 	if (elem == list_tail(ls)){	 
+// #ifdef VM
+// 		if (!vm_alloc_page(VM_ANON, newpage, true))
+// 			return NULL;
+
+// 		if (!vm_claim_page(newpage))
+// 			return NULL;
+// #else
 		if ((newpage = palloc_get_page(PAL_ZERO)) == NULL) 
 			return NULL;
-
+// #endif
 		list_push_back(ls, &newpage->elem);
 	} 	
 	return newpage;
@@ -472,6 +493,7 @@ int read(int fd, void *buffer, unsigned size)
 		return 0; 
 
 	check_address(buffer);
+	write_to_read_page(buffer);	
 	int bytes_read = size;
 	if (cur_file == stdin_ptr)
 	{
@@ -506,6 +528,7 @@ int write(int fd, const void *buffer, unsigned size)
 		return 0;
 	
 	check_address(buffer);
+	write_to_read_page(buffer);
 	int bytes_write = size;
 	if (cur_file == stdout_ptr) // stdout: lock을 걸고 buffer 전체를 입력
 	{

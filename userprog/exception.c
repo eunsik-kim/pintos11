@@ -149,7 +149,6 @@ page_fault (struct intr_frame *f) {
 
 	/* Count page faults. */
 	page_fault_cnt++;
-
 	/* If the fault is true fault, show info and exit. */
 #ifdef USERPROG
 	check_address(f->R.rax);

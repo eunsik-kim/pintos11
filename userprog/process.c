@@ -149,6 +149,8 @@ __do_fork(void *aux)
 	process_activate(current);
 #ifdef VM
 	supplemental_page_table_init(&current->spt);
+	parent->spt.pages.aux = parent->pml4;
+	current->spt.opend_file = parent->opend_file;
 	if (!supplemental_page_table_copy(&current->spt, &parent->spt))
 		goto error;
 #else
@@ -191,7 +193,8 @@ int process_exec(void *f_name)
 
 	/* We first kill the current context */
 	process_cleanup();
-	
+	supplemental_page_table_init(&thread_current()->spt);
+
 	/* filename 파싱 시작 */
 	char *next_ptr, *ret_ptr, *argv[64];
 	int argc = 0;
@@ -382,7 +385,6 @@ int process_wait(tid_t child_tid UNUSED)
 /* Exit the process. This function is called by thread_exit (). */
 void process_exit(void)
 {
-	process_cleanup();
 	struct thread *cur = thread_current();	
 	// close open file which is loaded from process.c (denying write on executables)
 	file_close(cur->opend_file);	
@@ -394,7 +396,8 @@ void process_exit(void)
 	if (cur->fork_elem.prev != NULL) {		
 		sema_up(&cur->wait_sema);	
 		sema_down(&cur->fork_sema);	// if parent thread doesn't wait, child will be zombie thread.
-	}			
+	}	
+	process_cleanup();
 }
 
 /* Free the current process's resources. */
@@ -774,6 +777,25 @@ lazy_load_segment(struct page *page, void *aux)
 	/* TODO: Load the segment from the file */
 	/* TODO: This called when the first page fault occurs on address VA. */
 	/* TODO: VA is available when calling this function. */
+	/* Get a page of memory. */
+	uint8_t *kpage = page->frame->kva;
+	struct thread *cur = thread_current();
+	struct file *file = (cur->opend_file) ? cur->opend_file : cur->spt.opend_file;	// use parent opend file
+	ASSERT(kpage && file && aux);
+
+	struct lazy_load_data *data = (struct lazy_load_data *)aux;
+	size_t seek_pos = data->seek_pos;
+	size_t page_read_bytes = data->readb;
+	// size_t page_zero_bytes = PGSIZE - data->readb; 			// since anon page, we don't need to init zero
+	// memset(kpage + page_read_bytes, 0, page_zero_bytes);
+	/* Load this page. */
+ 	file_seek(file, seek_pos);	
+	if (file_read(file, kpage, page_read_bytes) != (int)page_read_bytes)	
+		return false;
+
+	list_remove(&data->elem);
+	free(data);
+	return true;
 }
 
 /* Loads a segment starting at offset OFS in FILE at address
@@ -797,7 +819,7 @@ load_segment(struct file *file, off_t ofs, uint8_t *upage,
 	ASSERT((read_bytes + zero_bytes) % PGSIZE == 0);
 	ASSERT(pg_ofs(upage) == 0);
 	ASSERT(ofs % PGSIZE == 0);
-
+	size_t file_pos = ofs;
 	while (read_bytes > 0 || zero_bytes > 0)
 	{
 		/* Do calculate how to fill this page.
@@ -806,8 +828,12 @@ load_segment(struct file *file, off_t ofs, uint8_t *upage,
 		size_t page_read_bytes = read_bytes < PGSIZE ? read_bytes : PGSIZE;
 		size_t page_zero_bytes = PGSIZE - page_read_bytes;
 
+		struct lazy_load_data *data = (struct lazy_load_data *)malloc(sizeof(struct lazy_load_data));
+		data->seek_pos = file_pos;
+		data->readb = page_read_bytes;
+		list_push_back(&thread_current()->spt.lazy_list, &data->elem);
 		/* TODO: Set up aux to pass information to the lazy_load_segment. */
-		void *aux = NULL;
+		void *aux = data;
 		if (!vm_alloc_page_with_initializer(VM_ANON, upage,
 											writable, lazy_load_segment, aux))
 			return false;
@@ -815,6 +841,7 @@ load_segment(struct file *file, off_t ofs, uint8_t *upage,
 		/* Advance. */
 		read_bytes -= page_read_bytes;
 		zero_bytes -= page_zero_bytes;
+		file_pos += PGSIZE;
 		upage += PGSIZE;
 	}
 	return true;
@@ -831,7 +858,12 @@ setup_stack(struct intr_frame *if_)
 	 * TODO: If success, set the rsp accordingly.
 	 * TODO: You should mark the page is stack. */
 	/* TODO: Your code goes here */
+	if (!vm_alloc_page(VM_ANON | VM_STACK, stack_bottom, true))
+		return success;
 
-	return success;
+	if (!vm_claim_page(stack_bottom))
+		return success;
+	if_->rsp = USER_STACK;
+	return true;
 }
 #endif /* VM */

@@ -13,4 +13,11 @@ bool process_init_fdt(struct thread *t);
 bool process_duplicate_fdt(struct thread *parent, struct thread *child);
 bool process_delete_fdt(struct thread *t);
 
+struct lazy_load_data 
+{	
+	struct list_elem elem;
+	size_t seek_pos;
+	size_t readb;
+};
+
 #endif /* userprog/process.h */
