@@ -137,7 +137,7 @@ struct thread
 	struct list fork_list;					// wait
 	struct list_elem fork_elem;				// wait
 	int exit_status;						// exit
-	struct file *opend_file; 				// load
+	struct file *opend_file; 				// load -> running program
 #endif
 #ifdef VM
 	/* Table for whole virtual memory owned by thread. */

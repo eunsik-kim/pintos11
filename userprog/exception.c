@@ -147,7 +147,7 @@ page_fault (struct intr_frame *f) {
 		return;
 #endif
 
-	/* Count page faults. */
+	/* Count page faults. */ // count hard page fault(not recovered)
 	page_fault_cnt++;
 
 	/* If the fault is true fault, show info and exit. */

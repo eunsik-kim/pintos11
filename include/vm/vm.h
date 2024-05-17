@@ -2,6 +2,21 @@
 #define VM_VM_H
 #include <stdbool.h>
 #include "threads/palloc.h"
+#include "lib/kernel/hash.h"
+#include "lib/debug.h"
+
+
+// /* page frames */
+
+
+extern struct lock frame_lock; // lock for manipulating frame table
+
+struct frame_table {
+	struct hash frame_hash_list;	// frame table
+	// struct lock frame_lock; 		//frame_table lock
+};
+
+
 
 enum vm_type {
 	/* page not initialized */
@@ -46,6 +61,7 @@ struct page {
 	struct frame *frame;   /* Back reference for frame */
 
 	/* Your implementation */
+	struct hash_elem hash_elem;
 
 	/* Per-type data are binded into the union.
 	 * Each function automatically detects the current union */
@@ -61,8 +77,9 @@ struct page {
 
 /* The representation of "frame" */
 struct frame {
-	void *kva;
-	struct page *page;
+	void *kva; //kernal virtual address
+	struct page *page; //page
+	struct hash_elem hash_elem; //hash table element
 };
 
 /* The function table for page operations.
@@ -85,7 +102,13 @@ struct page_operations {
  * We don't want to force you to obey any specific design for this struct.
  * All designs up to you for this. */
 struct supplemental_page_table {
+	struct hash *spt_hash;
 };
+
+
+
+
+
 
 #include "threads/thread.h"
 void supplemental_page_table_init (struct supplemental_page_table *spt);
@@ -109,4 +132,24 @@ void vm_dealloc_page (struct page *page);
 bool vm_claim_page (void *va);
 enum vm_type page_get_type (struct page *page);
 
+
+
+
+
+
+
 #endif  /* VM_VM_H */
+
+/*  -----  Hash Functions  -----  */
+
+unsigned frame_hash(const struct hash_elem *p, void *aux UNUSED);
+bool frame_less(	const struct hash_elem *a_, const struct hash_elem *b_, void *aux UNUSED);
+
+struct frame_table* init_frame_table();
+
+/* Returns a hash value for page p. */
+unsigned page_hash (const struct hash_elem *p_, void *aux UNUSED);
+
+/* Returns true if page a precedes page b. */
+bool page_less (const struct hash_elem *a_, const struct hash_elem *b_, void *aux UNUSED);
+

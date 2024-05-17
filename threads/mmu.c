@@ -290,7 +290,7 @@ pml4_set_dirty (uint64_t *pml4, const void *vpage, bool dirty) {
 
 /* Returns true if the PTE for virtual page VPAGE in PML4 has been
  * accessed recently, that is, between the time the PTE was
- * installed and the last time it was cleared.  Returns false if
+ * installed and the last time it was cleared.  Returns false if`
  * PML4 contains no PTE for VPAGE. */
 bool
 pml4_is_accessed (uint64_t *pml4, const void *vpage) {

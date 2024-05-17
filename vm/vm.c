@@ -3,6 +3,13 @@
 #include "threads/malloc.h"
 #include "vm/vm.h"
 #include "vm/inspect.h"
+#include "lib/kernel/bitmap.h"
+#include "include/threads/loader.h"
+#include "threads/vaddr.h"
+#include "lib/debug.h"
+#include "include/threads/pte.h"
+
+// #include "lib/kernel/bitmap.c"
 
 /* Initializes the virtual memory subsystem by invoking each subsystem's
  * intialize codes. */
@@ -16,6 +23,8 @@ vm_init (void) {
 	register_inspect_intr ();
 	/* DO NOT MODIFY UPPER LINES. */
 	/* TODO: Your code goes here. */
+	init_frame_table(); /* Initialize Frame Table */
+
 }
 
 /* Get the type of the page. This function is useful if you want to know the
@@ -65,18 +74,32 @@ struct page *
 spt_find_page (struct supplemental_page_table *spt UNUSED, void *va UNUSED) {
 	struct page *page = NULL;
 	/* TODO: Fill this function. */
+	page = malloc(sizeof(struct page));
+	struct hash_elem *e;
 
-	return page;
+	page->va =va;
+	e = hash_find(&spt, &page->hash_elem);
+
+	if (e){
+		return hash_entry(e, struct page, hash_elem);
+	} else {
+		return NULL;
+	}
 }
 
 /* Insert PAGE into spt with validation. */
 bool
 spt_insert_page (struct supplemental_page_table *spt UNUSED,
 		struct page *page UNUSED) {
-	int succ = false;
+	// int succ = false;
 	/* TODO: Fill this function. */
+	if (hash_insert(&spt, &page->hash_elem)){
+		return true;
+	} else {
+		return false;
+	}
 
-	return succ;
+	// return succ;
 }
 
 void
@@ -112,10 +135,16 @@ static struct frame *
 vm_get_frame (void) {
 	struct frame *frame = NULL;
 	/* TODO: Fill this function. */
-
-	ASSERT (frame != NULL);
-	ASSERT (frame->page == NULL);
-	return frame;
+	frame = malloc(sizeof(struct page)); //allocate physical memory
+	if (frame){
+		frame->kva = palloc_get_page(PAL_ZERO);
+		frame-> page = NULL;
+		ASSERT (frame != NULL);
+		ASSERT (frame->page == NULL);
+		return frame;
+	} else {
+		PANIC("No available frames! Implement page eviction.");
+	}
 }
 
 /* Growing the stack. */
@@ -128,6 +157,8 @@ static bool
 vm_handle_wp (struct page *page UNUSED) {
 }
 
+
+
 /* Return true on success */
 bool
 vm_try_handle_fault (struct intr_frame *f UNUSED, void *addr UNUSED,
@@ -135,7 +166,16 @@ vm_try_handle_fault (struct intr_frame *f UNUSED, void *addr UNUSED,
 	struct supplemental_page_table *spt UNUSED = &thread_current ()->spt;
 	struct page *page = NULL;
 	/* TODO: Validate the fault */
+	if (user){
+		if (!is_user_vaddr(addr))
+			return false;
+	} else {
+		if (!is_kernel_vaddr(addr))
+			return false;
+	}
+
 	/* TODO: Your code goes here */
+	page = 
 
 	return vm_do_claim_page (page);
 }
@@ -153,8 +193,12 @@ bool
 vm_claim_page (void *va UNUSED) {
 	struct page *page = NULL;
 	/* TODO: Fill this function */
-
-	return vm_do_claim_page (page);
+	page = spt_find_page(&thread_current()->spt, va);
+	if (page==NULL){
+		return false;
+	} else {
+		return vm_do_claim_page (page);
+	}
 }
 
 /* Claim the PAGE and set up the mmu. */
@@ -167,13 +211,58 @@ vm_do_claim_page (struct page *page) {
 	page->frame = frame;
 
 	/* TODO: Insert page table entry to map page's VA to frame's PA. */
+	pml4_set_page(thread_current()->pml4, page->va, frame->kva);
 
 	return swap_in (page, frame->kva);
 }
 
+
+
+/* Returns the address of the page table entry for virtual
+ * address VADDR in page map level 4, pml4.
+ * If PML4E does not have a page table for VADDR, behavior depends
+ * on CREATE.  If CREATE is true, then a new page table is
+ * created and a pointer into it is returned.  Otherwise, a null
+ * pointer is returned. */
+uint64_t *
+pml4e_walk (uint64_t *pml4e, const uint64_t va, int create) {
+	uint64_t *pte = NULL;
+	int idx = PML4 (va);
+	int allocated = 0;
+	if (pml4e) {
+		uint64_t *pdpe = (uint64_t *) pml4e[idx];
+		if (!((uint64_t) pdpe & PTE_P)) {
+			if (create) {
+				uint64_t *new_page = palloc_get_page (PAL_ZERO);
+				if (new_page) {
+					pml4e[idx] = vtop (new_page) | PTE_U | PTE_W | PTE_P;
+					allocated = 1;
+				} else
+					return NULL;
+			} else
+				return NULL;
+		}
+		pte = pdpe_walk (ptov (PTE_ADDR (pml4e[idx])), va, create);
+	}
+	if (pte == NULL && allocated) {
+		palloc_free_page ((void *) ptov (PTE_ADDR (pml4e[idx])));
+		pml4e[idx] = 0;
+	}
+	return pte;
+}
+
+
+
+
+
+
+
+
+
 /* Initialize new supplemental page table */
 void
 supplemental_page_table_init (struct supplemental_page_table *spt UNUSED) {
+	hash_init(spt, page_hash, page_less, NULL);
 }
 
 /* Copy supplemental page table from src to dst */
@@ -187,4 +276,46 @@ void
 supplemental_page_table_kill (struct supplemental_page_table *spt UNUSED) {
 	/* TODO: Destroy all the supplemental_page_table hold by thread and
 	 * TODO: writeback all the modified contents to the storage. */
+}
+
+
+
+/*  -----  Hash Functions  -----  */
+
+unsigned
+frame_hash(const struct hash_elem *p, void *aux UNUSED){
+	const struct frame *fp = hash_entry(p, struct frame, hash_elem);
+	return hash_bytes(&fp->kva, sizeof fp->kva);
+}
+
+bool
+frame_less(	const struct hash_elem *a_,
+			const struct hash_elem *b_, void *aux UNUSED){
+	const struct frame *a = hash_entry(a_, struct frame, hash_elem);
+	const struct frame *b = hash_entry(b_, struct frame, hash_elem);
+	return a->kva < b->kva;
+}
+
+struct frame_table *
+init_frame_table(){
+	struct frame_table *frame_table=malloc(sizeof(struct frame_table));
+	// lock_init(&frame_table->frame_lock);
+	hash_init(&frame_table->frame_hash_list, frame_hash, frame_less, NULL);
+}
+
+
+/* Returns a hash value for page p. */
+unsigned
+page_hash (const struct hash_elem *p_, void *aux UNUSED) {
+  const struct page *p = hash_entry (p_, struct page, hash_elem);
+  return hash_bytes (&p->va, sizeof p->va);
+}
+
+/* Returns true if page a precedes page b. */
+bool
+page_less (const struct hash_elem *a_,
+           const struct hash_elem *b_, void *aux UNUSED) {
+  const struct page *a = hash_entry (a_, struct page, hash_elem);
+  const struct page *b = hash_entry (b_, struct page, hash_elem);
+  return a->va < b->va;
 }
