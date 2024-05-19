@@ -21,6 +21,7 @@
 #include "userprog/syscall.h"
 #ifdef VM
 #include "vm/vm.h"
+#include "hash.h"
 #endif
 
 static void process_cleanup(void);
@@ -758,7 +759,6 @@ static bool
 install_page(void *upage, void *kpage, bool writable)
 {
 	struct thread *t = thread_current();
-
 	/* Verify that there's not already a page at that virtual
 	 * address, then map our page there. */
 	return (pml4_get_page(t->pml4, upage) == NULL && pml4_set_page(t->pml4, upage, kpage, writable));
@@ -774,6 +774,21 @@ lazy_load_segment(struct page *page, void *aux)
 	/* TODO: Load the segment from the file */
 	/* TODO: This called when the first page fault occurs on address VA. */
 	/* TODO: VA is available when calling this function. */
+	uint8_t *kpage = page->frame->kva;
+	struct thread *cur = thread_current();
+	struct file *file = cur->opend_file;
+
+	ASSERT(kpage && file && aux);
+
+	struct lazy_load_segment_aux * args = (struct lazy_load_segment_aux *) aux;
+	off_t ofs = args->ofs;
+	size_t page_read_bytes = args->page_read_bytes;
+
+	file_seek(file, ofs);
+	if (file_read(file, kpage, page_read_bytes)!=(int)page_read_bytes)
+		return false;
+	free(aux);
+	return true;
 }
 
 /* Loads a segment starting at offset OFS in FILE at address
@@ -797,6 +812,7 @@ load_segment(struct file *file, off_t ofs, uint8_t *upage,
 	ASSERT((read_bytes + zero_bytes) % PGSIZE == 0);
 	ASSERT(pg_ofs(upage) == 0);
 	ASSERT(ofs % PGSIZE == 0);
+	// off_t ofs = ofs;
 
 	while (read_bytes > 0 || zero_bytes > 0)
 	{
@@ -807,7 +823,11 @@ load_segment(struct file *file, off_t ofs, uint8_t *upage,
 		size_t page_zero_bytes = PGSIZE - page_read_bytes;
 
 		/* TODO: Set up aux to pass information to the lazy_load_segment. */
-		void *aux = NULL;
+		struct lazy_load_segment_aux *aux = (struct lazy_load_segment_aux *) malloc(sizeof(struct lazy_load_segment_aux));
+		aux->file = file;
+		aux->ofs = ofs;
+		aux->page_read_bytes = page_read_bytes;
+		
 		if (!vm_alloc_page_with_initializer(VM_ANON, upage,
 											writable, lazy_load_segment, aux))
 			return false;
@@ -816,6 +836,7 @@ load_segment(struct file *file, off_t ofs, uint8_t *upage,
 		read_bytes -= page_read_bytes;
 		zero_bytes -= page_zero_bytes;
 		upage += PGSIZE;
+		ofs += PGSIZE;
 	}
 	return true;
 }
