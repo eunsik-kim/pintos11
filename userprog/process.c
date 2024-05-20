@@ -67,10 +67,6 @@ tid_t process_create_initd(const char *file_name)
 static void
 initd(void *f_name)
 {
-#ifdef VM
-	supplemental_page_table_init(&thread_current()->spt);
-#endif
-
 	process_init();
 
 	if (process_exec(f_name) < 0)
@@ -80,7 +76,7 @@ initd(void *f_name)
 
 /* Clones the current process as `name`. Returns the new process's thread id, or
  * TID_ERROR if the thread cannot be created. */
-tid_t process_fork(const char *name, struct intr_frame *if_ UNUSED)
+tid_t process_fork(const char *name)
 {
 	/* Clone current thread to new thread.*/
 	return thread_create(name, PRI_DEFAULT, __do_fork, thread_current());
@@ -148,9 +144,8 @@ __do_fork(void *aux)
 
 	process_activate(current);
 #ifdef VM
-	supplemental_page_table_init(&current->spt);
 	parent->spt.pages.aux = parent->pml4;
-	current->spt.opend_file = parent->opend_file;
+	current->stack_bottom = parent->stack_bottom;
 	if (!supplemental_page_table_copy(&current->spt, &parent->spt))
 		goto error;
 #else
@@ -190,10 +185,26 @@ int process_exec(void *f_name)
 	_if.ds = _if.es = _if.ss = SEL_UDSEG;
 	_if.cs = SEL_UCSEG;
 	_if.eflags = FLAG_IF | FLAG_MBS;
+	struct thread *cur = thread_current();
 
 	/* We first kill the current context */
+#ifdef VM
+	struct list inherit_list;
+	list_init(&inherit_list);
+	cur->spt.pages.aux = &inherit_list;
 	process_cleanup();
-	supplemental_page_table_init(&thread_current()->spt);
+	supplemental_page_table_init(&cur->spt);
+	// page inherit for child process
+	while (!list_empty(&inherit_list)) {		
+		struct page *inpage = hash_entry((struct hash_elem *)list_pop_front(&inherit_list), struct page, hash_elem);
+		if (!spt_insert_page(&cur->spt, inpage)
+				&& !pml4_set_page(cur->pml4, inpage->va, inpage->frame->kva, inpage->type & VM_WRITABLE))
+			return -1;
+	}
+
+#else
+	process_cleanup();
+#endif
 
 	/* filename 파싱 시작 */
 	char *next_ptr, *ret_ptr, *argv[64];
@@ -392,12 +403,16 @@ void process_exit(void)
 	// delete fdt and file (it should be out of process_cleanup())
 	process_delete_fdt(cur);
 
+#ifdef VM
+	cur->spt.pages.aux = NULL;
+#endif
+	process_cleanup();
+
 	// give exit_status to parent thread
 	if (cur->fork_elem.prev != NULL) {		
 		sema_up(&cur->wait_sema);	
 		sema_down(&cur->fork_sema);	// if parent thread doesn't wait, child will be zombie thread.
 	}	
-	process_cleanup();
 }
 
 /* Free the current process's resources. */
@@ -500,9 +515,7 @@ struct ELF64_PHDR
 
 static bool setup_stack(struct intr_frame *if_);
 static bool validate_segment(const struct Phdr *, struct file *);
-static bool load_segment(struct file *file, off_t ofs, uint8_t *upage,
-						 uint32_t read_bytes, uint32_t zero_bytes,
-						 bool writable);
+
 
 /* Loads an ELF executable from FILE_NAME into the current thread.
  * Stores the executable's entry point into *RIP
@@ -779,22 +792,20 @@ lazy_load_segment(struct page *page, void *aux)
 	/* TODO: VA is available when calling this function. */
 	/* Get a page of memory. */
 	uint8_t *kpage = page->frame->kva;
-	struct thread *cur = thread_current();
-	struct file *file = (cur->opend_file) ? cur->opend_file : cur->spt.opend_file;	// use parent opend file
-	ASSERT(kpage && file && aux);
-
 	struct lazy_load_data *data = (struct lazy_load_data *)aux;
-	size_t seek_pos = data->seek_pos;
-	size_t page_read_bytes = data->readb;
-	// size_t page_zero_bytes = PGSIZE - data->readb; 			// since anon page, we don't need to init zero
-	// memset(kpage + page_read_bytes, 0, page_zero_bytes);
-	/* Load this page. */
- 	file_seek(file, seek_pos);	
-	if (file_read(file, kpage, page_read_bytes) != (int)page_read_bytes)	
-		return false;
+	struct inode *inode = data->inode;
+	struct thread *cur = thread_current();
+	ASSERT(kpage && inode && aux);
 
-	list_remove(&data->elem);
-	free(data);
+	size_t ofs = data->ofs;
+	size_t page_read_bytes = data->readb;
+	size_t page_zero_bytes = PGSIZE - data->readb; 
+
+	/* Load this page. */
+	if (inode_read_at(inode, kpage, page_read_bytes, ofs) != (int)page_read_bytes)
+		return false;
+		
+	memset(kpage + page_read_bytes, 0, page_zero_bytes);
 	return true;
 }
 
@@ -812,14 +823,15 @@ lazy_load_segment(struct page *page, void *aux)
  *
  * Return true if successful, false if a memory allocation error
  * or disk read error occurs. */
-static bool
+bool
 load_segment(struct file *file, off_t ofs, uint8_t *upage,
-			 uint32_t read_bytes, uint32_t zero_bytes, bool writable)
+			 uint32_t read_bytes, uint32_t zero_bytes, uint64_t writable)
 {
 	ASSERT((read_bytes + zero_bytes) % PGSIZE == 0);
 	ASSERT(pg_ofs(upage) == 0);
 	ASSERT(ofs % PGSIZE == 0);
-	size_t file_pos = ofs;
+	struct thread *cur = thread_current();
+	int cnt = 0;
 	while (read_bytes > 0 || zero_bytes > 0)
 	{
 		/* Do calculate how to fill this page.
@@ -828,20 +840,31 @@ load_segment(struct file *file, off_t ofs, uint8_t *upage,
 		size_t page_read_bytes = read_bytes < PGSIZE ? read_bytes : PGSIZE;
 		size_t page_zero_bytes = PGSIZE - page_read_bytes;
 
-		struct lazy_load_data *data = (struct lazy_load_data *)malloc(sizeof(struct lazy_load_data));
-		data->seek_pos = file_pos;
+		struct lazy_load_data *data = (struct lazy_load_data *)
+										calloc(1, sizeof(struct lazy_load_data));
+		data->inode = file->inode;
+		data->ofs = ofs;
 		data->readb = page_read_bytes;
-		list_push_back(&thread_current()->spt.lazy_list, &data->elem);
+		list_push_back(&cur->spt.lazy_list, &data->elem);
 		/* TODO: Set up aux to pass information to the lazy_load_segment. */
 		void *aux = data;
-		if (!vm_alloc_page_with_initializer(VM_ANON, upage,
+		cnt++;
+		if (!vm_alloc_page_with_initializer(VM_FILE, upage,
 											writable, lazy_load_segment, aux))
+		{	// delete page to reduce memory leak
+			while (cnt--){
+				struct page *dpage = spt_find_page(&cur->spt, upage);
+				if (dpage)
+					spt_remove_page(&cur->spt, dpage);
+				upage -= PGSIZE;
+			}
 			return false;
-
+		}
+			
 		/* Advance. */
 		read_bytes -= page_read_bytes;
 		zero_bytes -= page_zero_bytes;
-		file_pos += PGSIZE;
+		ofs += PGSIZE;
 		upage += PGSIZE;
 	}
 	return true;
@@ -858,11 +881,9 @@ setup_stack(struct intr_frame *if_)
 	 * TODO: If success, set the rsp accordingly.
 	 * TODO: You should mark the page is stack. */
 	/* TODO: Your code goes here */
-	if (!vm_alloc_page(VM_ANON | VM_STACK, stack_bottom, true))
+	if (!vm_stack_growth(stack_bottom))
 		return success;
 
-	if (!vm_claim_page(stack_bottom))
-		return success;
 	if_->rsp = USER_STACK;
 	return true;
 }

@@ -214,7 +214,7 @@ void donate_priority(void)
 
    for (int i = 0; i < MAX_DONATION_LEVEL; i++)
    {
-      if (curr->wait_on_lock == NULL) // 더이상 중첩되지 않았으면 종료
+      if (curr->wait_on_lock == NULL || curr->wait_on_lock->holder == NULL) // 더이상 중첩되지 않았으면 종료
          return;
       holder = curr->wait_on_lock->holder;      // lock holder의 donors list에 thread elem은 넣지 않아도됨
       holder->priority = priority;
@@ -384,11 +384,8 @@ void cond_broadcast(struct condition *cond, struct lock *lock)
 void thread_reschedule(struct thread* t)
 {
 	if ((t->status == THREAD_BLOCKED) && (t->wait_on_lock != NULL)){
-		enum intr_level old_level;
-		old_level = intr_disable();
 		list_remove(&t->elem);
 		list_insert_ordered(&t->wait_on_lock->semaphore.waiters, &t->elem, priority_larger, WAIT_LIST);
-		intr_set_level(old_level);
 	} else if (t->status == THREAD_READY)
 		thread_readylist_reorder(t);
 }

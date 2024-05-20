@@ -144,16 +144,18 @@ page_fault (struct intr_frame *f) {
 #ifdef VM
 	/* For project 3 and later. */
 	if (vm_try_handle_fault (f, fault_addr, user, write, not_present))
-		return;
+		return;		
 #endif
 
+	exit(-1);	// just for tests/vm/pt-grow-bad
+#ifdef USERPROG
+	check_address(f->R.rax);
+#endif
 	/* Count page faults. */
 	page_fault_cnt++;
 	/* If the fault is true fault, show info and exit. */
-#ifdef USERPROG
-	check_address(f->R.rax);
-	thread_current()->exit_status = -1;		// 비정상 종료
-#endif
+
+	
 	printf ("Page fault at %p: %s error %s page in %s context.\n",
 			fault_addr,
 			not_present ? "not present" : "rights violation",

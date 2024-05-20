@@ -3,6 +3,9 @@
 #include <stdbool.h>
 #include "threads/palloc.h"
 #include "lib/kernel/hash.h"
+#include "filesys/inode.h"
+#include "threads/mmu.h"
+#include "userprog/syscall.h"
 
 enum vm_type {
 	/* page not initialized */
@@ -19,9 +22,12 @@ enum vm_type {
 
 	/* Auxillary bit flag marker for store information. You can add more
 	 * markers, until the value is fit in the int. */
+	VM_MMAP = (1<<3),
 	VM_STACK = (1<<4),
 	VM_WRITABLE = (1<<5),
 	VM_CPWRITE = (1<<6),		// cpwrite
+	VM_DIRTY = (1<<7),
+	VM_ACCESS = (1<<8),
 	/* DO NOT EXCEED THIS VALUE. */
 	VM_MARKER_END = (1 << 31),
 };
@@ -48,8 +54,8 @@ struct page {
 	struct frame *frame;   /* Back reference for frame */
 
 	/* Your implementation */
-	struct hash_elem hash_elem;
 	enum vm_type type;
+	struct hash_elem hash_elem;
 
 	/* Per-type data are binded into the union.
 	 * Each function automatically detects the current union */
@@ -70,6 +76,7 @@ struct frame {
 	struct hash_elem hash_elem;
 	void *kva;
 	struct page *page;
+	bool dirty;
 	int unwritable;
 };
 
@@ -77,7 +84,7 @@ struct frame {
 struct frame_table
 {
 	struct hash frames;
-	struct lock hash_lock;
+	struct lock frame_lock;
 };
 
 /* The function table for page operations.
@@ -101,9 +108,7 @@ struct page_operations {
  * All designs up to you for this. */
 struct supplemental_page_table {
 	struct hash pages;
-	struct lock hash_lock;
 	struct list lazy_list;
-	struct file *opend_file;
 };
 
 /* vm */
@@ -112,8 +117,10 @@ bool frame_less(const struct hash_elem *a_, const struct hash_elem *b_, void *au
 bool page_less(const struct hash_elem *a_, const struct hash_elem *b_, void *aux);
 unsigned page_hash(const struct hash_elem *p_, void *aux );
 void hash_free_page(struct hash_elem *e, void *aux);
+void mm_free_frame(struct hash_elem *e, void *aux UNUSED);
 bool hash_copy_action(struct hash_elem *e, void *aux);
 bool ftb_delete_frame(struct page *delete_page);
+bool vm_stack_growth(void *addr);
 
 #include "threads/thread.h"
 void supplemental_page_table_init (struct supplemental_page_table *spt);
@@ -132,7 +139,7 @@ bool vm_try_handle_fault (struct intr_frame *f, void *addr, bool user,
 #define vm_alloc_page(type, upage, writable) \
 	vm_alloc_page_with_initializer ((type), (upage), (writable), NULL, NULL)
 bool vm_alloc_page_with_initializer (enum vm_type type, void *upage,
-		bool writable, vm_initializer *init, void *aux);
+		uint64_t writable, vm_initializer *init, void *aux);
 void vm_dealloc_page (struct page *page);
 bool vm_claim_page (void *va);
 enum vm_type page_get_type (struct page *page);

@@ -30,7 +30,7 @@ hash_init (struct hash *h,
 	h->hash = hash;
 	h->less = less;
 	h->aux = aux;
-
+	lock_init(&h->h_lock);
 	if (h->buckets != NULL) {
 		hash_clear (h, NULL);
 		return true;
@@ -90,6 +90,7 @@ hash_destroy (struct hash *h, hash_action_func *destructor) {
    without inserting NEW. */
 struct hash_elem *
 hash_insert (struct hash *h, struct hash_elem *new) {
+	lock_acquire(&h->h_lock);
 	struct list *bucket = find_bucket (h, new);
 	struct hash_elem *old = find_elem (h, bucket, new);
 
@@ -97,7 +98,7 @@ hash_insert (struct hash *h, struct hash_elem *new) {
 		insert_elem (h, bucket, new);
 
 	rehash (h);
-
+	lock_release(&h->h_lock);
 	return old;
 }
 
@@ -133,11 +134,13 @@ hash_find (struct hash *h, struct hash_elem *e) {
    responsibility to deallocate them. */
 struct hash_elem *
 hash_delete (struct hash *h, struct hash_elem *e) {
+	lock_acquire(&h->h_lock);
 	struct hash_elem *found = find_elem (h, find_bucket (h, e), e);
 	if (found != NULL) {
 		remove_elem (h, found);
 		rehash (h);
 	}
+	lock_release(&h->h_lock);
 	return found;
 }
 

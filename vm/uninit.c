@@ -10,6 +10,7 @@
 
 #include "vm/vm.h"
 #include "vm/uninit.h"
+#include "userprog/process.h"
 
 static bool uninit_initialize (struct page *page, void *kva);
 static void uninit_destroy (struct page *page);
@@ -66,5 +67,8 @@ uninit_destroy (struct page *page) {
 	/* TODO: Fill this function.
 	 * TODO: If you don't have anything to do, just return. */
 	ftb_delete_frame(page);
+	struct lazy_load_data *data = page->uninit.aux;
+	list_remove(&data->elem);
+	free(data);
 	return;
 }

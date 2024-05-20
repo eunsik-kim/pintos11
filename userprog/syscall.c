@@ -15,6 +15,7 @@
 #include "filesys/inode.h"
 #include "devices/disk.h"
 #include "threads/palloc.h"
+#include "userprog/process.h"
 #include "vm/vm.h"
 
 /* System call.
@@ -32,13 +33,6 @@
 #define MAX_STDOUT (1 << 9)
 #define MAX_FD (1 << 9)			/* PGSIZE / sizeof(struct file) */
 
-/* An open file. */
-struct file
-{
-	struct inode *inode; /* File's inode. */
-	off_t pos;			 /* Current position. */
-	bool deny_write;	 /* Has file_deny_write() been called? */
-};
 
 struct func_params
 {	
@@ -82,6 +76,8 @@ struct fpage *add_page_to_list(struct list_elem *elem, struct list *ls);
 bool find_file_in_page(struct func_params *params, struct list *ls);
 void update_offset(struct fpage *table, int i, call_type type);
 void write_to_read_page(void *uaddr);
+void *mmap(void *addr, size_t length, int writable, int fd, off_t offset);
+void munmap(void *addr);
 
 void syscall_init(void)
 {
@@ -103,9 +99,7 @@ void syscall_init(void)
 /* The main system call interface */
 void syscall_handler(struct intr_frame *f)
 {	
-	int syscall = f->R.rax;
-	if ((5 <= syscall) && (syscall <= 13)) 
-		lock_acquire(&filesys_lock);
+	int syscall = f->R.rax;		
 	switch (syscall)
 	{
 		case SYS_HALT:
@@ -150,17 +144,19 @@ void syscall_handler(struct intr_frame *f)
 		case SYS_CLOSE:
 			close(f->R.rdi);
 			break;
+		case SYS_MMAP:
+			f->R.rax = mmap(f->R.rdi, f->R.rsi, f->R.rdx, f->R.r10, f->R.r8);
+			break;
+		case SYS_MUNMAP:
+			munmap(f->R.rdi);
+			break;
 		case SYS_DUP2:
-			lock_acquire(&filesys_lock);
 			f->R.rax = dup2(f->R.rdi, f->R.rsi);
-			lock_release(&filesys_lock);
 			break;
 		default:
 			printf("We don't implemented yet.");
 			break;
 	}
-	if ((5 <= syscall) && (syscall <= 13))
-		lock_release(&filesys_lock);
 }
 
 /*
@@ -225,16 +221,8 @@ bool find_file_in_page(struct func_params *params, struct list *ls)
 struct fpage *add_page_to_list(struct list_elem *elem, struct list *ls) {
 	struct fpage *newpage = list_entry(elem, struct fpage, elem);
 	if (elem == list_tail(ls)){	 
-// #ifdef VM
-// 		if (!vm_alloc_page(VM_ANON, newpage, true))
-// 			return NULL;
-
-// 		if (!vm_claim_page(newpage))
-// 			return NULL;
-// #else
 		if ((newpage = palloc_get_page(PAL_ZERO)) == NULL) 
 			return NULL;
-// #endif
 		list_push_back(ls, &newpage->elem);
 	} 	
 	return newpage;
@@ -432,14 +420,20 @@ int wait(pid_t pid)
 bool create(const char *file, unsigned initial_size)
 {
 	check_address(file);
-	return filesys_create(file, initial_size);
+	lock_acquire(&filesys_lock);
+	bool flag = filesys_create(file, initial_size);
+	lock_release(&filesys_lock);
+	return flag;
 }
 
 /* file을 삭제 후 성공여부 return, file이 없거나 inode 생성에 실패시 fail */
 bool remove(const char *file)
 {
 	check_address(file);
-	return filesys_remove(file);
+	lock_acquire(&filesys_lock);
+	bool flag = filesys_remove(file);
+	lock_release(&filesys_lock);
+	return flag;
 }
 
 /*
@@ -450,7 +444,9 @@ bool remove(const char *file)
 int open(const char *file)
 {
 	check_address(file);
+	lock_acquire(&filesys_lock);
 	struct file *file_entity = filesys_open(file);
+	lock_release(&filesys_lock);
 	if (file_entity == NULL) 	// wrong file name or oom or not in disk (initialized from arg -p)
 		return -1;
 	// find file_entry
@@ -508,8 +504,10 @@ int read(int fd, void *buffer, unsigned size)
 		if (cur_file->pos == inode_length(cur_file->inode)) // end of file
 			return 0;
 
+		lock_acquire(&filesys_lock);
 		if ((bytes_read = file_read(cur_file, buffer, size)) == 0)  // could not read
 			return -1;
+		lock_release(&filesys_lock);
 	}
 	return bytes_read;
 }
@@ -528,7 +526,6 @@ int write(int fd, const void *buffer, unsigned size)
 		return 0;
 	
 	check_address(buffer);
-	write_to_read_page(buffer);
 	int bytes_write = size;
 	if (cur_file == stdout_ptr) // stdout: lock을 걸고 buffer 전체를 입력
 	{
@@ -545,8 +542,12 @@ int write(int fd, const void *buffer, unsigned size)
 		while (size-- > 0)
 			putchar(buffer++);
 
-	else  // file growth is not implemented by the basic file system
+	else{	// file growth is not implemented by the basic file system
+		lock_acquire(&filesys_lock);
 		bytes_write = file_write(cur_file, buffer, size);
+		lock_release(&filesys_lock);
+	}  
+		
 	return bytes_write;
 }
 
@@ -614,4 +615,57 @@ int dup2(int oldfd, int newfd)
 			return -1;
 	}		
 	return newfd;
+}
+
+/* fd로 열린 파일의 오프셋(offset) 바이트부터 length 바이트 만큼을 
+프로세스의 가상주소공간의 주소 addr 에 매핑 하여 주소를 반환, 실패시 -1반환
+lazy load, 메모리 중복 검사 및 다수의 예외 처리 포함 */
+void *mmap(void *addr, size_t length, int writable, int fd, off_t offset)
+{		
+	size_t out = addr + length;
+	if ((addr == NULL) || ((uint64_t)addr % PGSIZE != 0) || (length == 0) 
+		|| (offset % PGSIZE != 0) || is_kernel_vaddr(addr) 
+			|| (is_kernel_vaddr(length)) || is_kernel_vaddr(addr + length)) 
+		return NULL;
+
+	struct thread *cur = thread_current();
+	struct func_params params;
+	params.fd = fd + 1;
+	if (!find_file_in_page(&params, &thread_current()->fdt_list))
+		return NULL;
+
+	struct file *cur_file = params.file;
+	inode_reopen(cur_file->inode);
+	uint64_t file_len = file_length(cur_file);
+	if (is_user_vaddr(cur_file) || (file_len == 0))	
+		return NULL;
+
+	size_t zerob = (file_len % PGSIZE) ? PGSIZE - file_len % PGSIZE : 0;
+	struct list *mmap_list = (struct list *)malloc(sizeof (struct list));
+	list_init(mmap_list);
+	writable = (writable) ? 1 : 0;
+	uint64_t result = (uint64_t)writable + (uint64_t)mmap_list; 
+	if (!load_segment(cur_file, offset, addr, file_len, zerob, result))
+		return NULL;
+
+	return addr;
+}
+
+/* 지정된 주소 범위 addr에 대한 매핑을 해제, mmap에 의해 연결된 page들을 unmap*/
+void munmap(void *addr)
+{	
+	struct thread *cur = thread_current();
+	struct page *tpage, *mpage = spt_find_page(&cur->spt, addr);
+	if (mpage == NULL || !(mpage->type & VM_FILE))
+		return;
+	
+	struct list *mmap_list = mpage->file.data->mmap_list;
+	int length = list_size(mmap_list);
+	while(length--) {
+		struct file_page *fpage = list_entry(list_pop_front(mmap_list), 
+														struct file_page, mmap_elem);
+		struct hash_elem *he = (uint64_t)fpage - 16;
+		tpage = hash_entry(he, struct page, hash_elem);
+		spt_remove_page(&cur->spt, tpage);
+	}
 }

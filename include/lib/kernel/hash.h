@@ -24,6 +24,7 @@
 #include <stddef.h>
 #include <stdint.h>
 #include "list.h"
+#include "threads/synch.h"
 
 /* Hash element. */
 struct hash_elem {
@@ -62,6 +63,7 @@ struct hash {
 	hash_hash_func *hash;       /* Hash function. */
 	hash_less_func *less;       /* Comparison function. */
 	void *aux;                  /* Auxiliary data for `hash' and `less'. */
+	struct lock h_lock;
 };
 
 /* A hash table iterator. */
