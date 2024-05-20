@@ -34,8 +34,11 @@ enum vm_type {
 
 	/* Auxillary bit flag marker for store information. You can add more
 	 * markers, until the value is fit in the int. */
-	VM_MARKER_0 = (1 << 3),
+	VM_STACK = (1 << 3),
 	VM_MARKER_1 = (1 << 4),
+	VM_MARKER_2 = (1 << 5),
+	VM_MARKER_3 = (1 << 6),
+	VM_MARKER_4 = (1 << 7),
 
 	/* DO NOT EXCEED THIS VALUE. */
 	VM_MARKER_END = (1 << 31),
@@ -106,11 +109,9 @@ struct page_operations {
  * We don't want to force you to obey any specific design for this struct.
  * All designs up to you for this. */
 struct supplemental_page_table {
-	struct lock *hash_lock;
-	struct hash *spt_page_hash;
+	struct lock hash_lock;
+	struct hash spt_page_hash;
 };
-
-
 
 
 
@@ -138,11 +139,6 @@ bool vm_claim_page (void *va);
 enum vm_type page_get_type (struct page *page);
 
 
-
-
-
-
-
 #endif  /* VM_VM_H */
 
 /*  -----  Hash Functions  -----  */
@@ -158,3 +154,4 @@ unsigned page_hash (const struct hash_elem *p_, void *aux UNUSED);
 /* Returns true if page a precedes page b. */
 bool page_less (const struct hash_elem *a_, const struct hash_elem *b_, void *aux UNUSED);
 
+void hash_free_page(struct hash_elem *e, void *aux UNUSED);

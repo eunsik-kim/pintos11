@@ -149,9 +149,10 @@ __do_fork(void *aux)
 
 	process_activate(current);
 #ifdef VM
-	supplemental_page_table_init(&current->spt);
-	if (!supplemental_page_table_copy(&current->spt, &parent->spt))
-		goto error;
+	supplemental_page_table_init(&current->spt); 
+	// dst, src 순서(copy parent's spt to current spt)
+	// if (!supplemental_page_table_copy(&current->spt, &parent->spt))
+	// 	goto error;
 #else
 	if (!pml4_for_each(parent->pml4, duplicate_pte, parent))	// pml4의 page복사
 		goto error;
@@ -383,7 +384,7 @@ int process_wait(tid_t child_tid UNUSED)
 /* Exit the process. This function is called by thread_exit (). */
 void process_exit(void)
 {
-	process_cleanup();
+	
 	struct thread *cur = thread_current();	
 	// close open file which is loaded from process.c (denying write on executables)
 	file_close(cur->opend_file);	
@@ -395,7 +396,15 @@ void process_exit(void)
 	if (cur->fork_elem.prev != NULL) {		
 		sema_up(&cur->wait_sema);	
 		sema_down(&cur->fork_sema);	// if parent thread doesn't wait, child will be zombie thread.
-	}			
+	}
+
+	process_cleanup(); //releases filesys_lock in process_cleanup
+
+	/* destroy spt */ 
+	// lock_acquire(&cur->spt->hash_lock);
+	// hash_destroy(&cur->spt->spt_page_hash, hash_delete);
+	// lock_release(&cur->spt->hash_lock);
+
 }
 
 /* Free the current process's resources. */
@@ -727,6 +736,7 @@ load_segment(struct file *file, off_t ofs, uint8_t *upage,
 	return true;
 }
 
+
 /* Create a minimal stack by mapping a zeroed page at the USER_STACK */
 static bool
 setup_stack(struct intr_frame *if_)
@@ -783,11 +793,11 @@ lazy_load_segment(struct page *page, void *aux)
 	struct lazy_load_segment_aux * args = (struct lazy_load_segment_aux *) aux;
 	off_t ofs = args->ofs;
 	size_t page_read_bytes = args->page_read_bytes;
+	// free(args); -> fork할 때 문제가 생길 수 있음 그러면 언제 free?
 
 	file_seek(file, ofs);
 	if (file_read(file, kpage, page_read_bytes)!=(int)page_read_bytes)
 		return false;
-	free(aux);
 	return true;
 }
 
@@ -829,7 +839,7 @@ load_segment(struct file *file, off_t ofs, uint8_t *upage,
 		aux->page_read_bytes = page_read_bytes;
 		
 		if (!vm_alloc_page_with_initializer(VM_ANON, upage,
-											writable, lazy_load_segment, aux))
+											writable, lazy_load_segment, aux)) // Set up how to load
 			return false;
 
 		/* Advance. */
@@ -840,6 +850,7 @@ load_segment(struct file *file, off_t ofs, uint8_t *upage,
 	}
 	return true;
 }
+
 
 /* Create a PAGE of stack at the USER_STACK. Return true on success. */
 static bool
@@ -852,7 +863,11 @@ setup_stack(struct intr_frame *if_)
 	 * TODO: If success, set the rsp accordingly.
 	 * TODO: You should mark the page is stack. */
 	/* TODO: Your code goes here */
-
+	if(!vm_alloc_page(VM_ANON|VM_STACK, stack_bottom,true)) // alloc page & insert into spt
+		return false;
+	success = vm_claim_page(stack_bottom); //frame 할당&linking 및 pml4 setting
+	if (success)
+		if_->rsp = USER_STACK;
 	return success;
 }
 #endif /* VM */
