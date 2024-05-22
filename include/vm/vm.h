@@ -56,10 +56,10 @@ struct page {
 	struct frame *frame;   /* Back reference for frame */
 
 	/* Your implementation */
-	enum vm_type type;
-	uint64_t *pml4;
-	struct list_elem cp_elem;
-	struct hash_elem hash_elem;
+	enum vm_type type;					// check status
+	uint64_t *pml4;						// swap out
+	struct list_elem cp_elem;			// for copy 
+	struct hash_elem hash_elem;			// for spt
 	
 	/* Per-type data are binded into the union.
 	 * Each function automatically detects the current union */
@@ -118,7 +118,6 @@ bool frame_less(const struct hash_elem *a_, const struct hash_elem *b_, void *au
 bool page_less(const struct hash_elem *a_, const struct hash_elem *b_, void *aux);
 unsigned page_hash(const struct hash_elem *p_, void *aux );
 void hash_free_page(struct hash_elem *e, void *aux);
-void mm_free_frame(struct hash_elem *e, void *aux UNUSED);
 bool ftb_delete_frame(struct page *delete_page);
 
 /* stack growth */
@@ -127,8 +126,9 @@ bool check_rsp_valid(void *addr);
 
 /* share and cp page */
 bool hash_copy_action(struct hash_elem *e, void *aux);
-struct list *find_new_mmap_list(struct page *src_page);
-void mm_free_frame(struct hash_elem *e, void *aux UNUSED);
+// bool Is_alone(struct list_elem *elem, struct semaphore *sema);
+// void List_insert(struct list_elem *dst_elem, struct list_elem *src_elem, struct semaphore *sema);
+// void List_remove(struct list_elem *elem, struct semaphore *sema);
 
 /* sap out & in */
 void disable_redundant_frame(struct page *page);
@@ -160,7 +160,7 @@ bool vm_try_handle_fault (struct intr_frame *f, void *addr, bool user,
 #define vm_alloc_page(type, upage, writable) \
 	vm_alloc_page_with_initializer ((type), (upage), (writable), NULL, NULL)
 bool vm_alloc_page_with_initializer (enum vm_type type, void *upage,
-		uint64_t writable, vm_initializer *init, void *aux);
+		bool writable, vm_initializer *init, void *aux);
 void vm_dealloc_page (struct page *page);
 bool vm_claim_page (void *va);
 enum vm_type page_get_type (struct page *page);

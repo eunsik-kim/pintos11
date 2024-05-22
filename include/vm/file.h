@@ -7,8 +7,7 @@ struct page;
 enum vm_type;
 
 struct file_page {
-	struct list_elem mmap_elem;	
-	struct lazy_load_data *data;
+	struct lazy_load_data *data;	// memorize data
 };
 
 void vm_file_init (void);

@@ -29,9 +29,6 @@ file_backed_initializer (struct page *page, enum vm_type type, void *kva) {
 	page->operations = &file_ops;
 	page->file.data = page->uninit.aux;
 
-	/* insert mmap list */
-	if (page->file.data->mmap_list)	
-		list_push_back(page->file.data->mmap_list, &page->file.mmap_elem);
 	return true;
 }
 
@@ -90,15 +87,8 @@ static void delete_mmap_page(struct page *page) {
 		if ((page->type & VM_FRAME) && isdrity && data->inode && !data->inode->removed) 
 			ASSERT(inode_write_at(data->inode, page->frame->kva, data->readb, data->ofs) == data->readb);
 		
-		// delete mmap_list
-		if (data->mmap_list) {
-			list_remove(&file_page->mmap_elem);
-			if (list_empty(data->mmap_list)) {
-				inode_close(data->inode);
-				free(data->mmap_list);
-			}
-		}
-		// delete lazy load data
+		// close inode and delete lazy load data
+		inode_close(data->inode);
 		free(data);
 	}
 }

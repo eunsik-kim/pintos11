@@ -192,15 +192,13 @@ void lock_acquire(struct lock *lock)
    ASSERT(!lock_held_by_current_thread(lock));
 
    struct thread *curr = thread_current();
-   if (lock_try_acquire(lock)) 	/* priority donation이 발생하지 않음 */
-      return;	
 
-   curr->wait_on_lock = lock;    // 현재 스레드의 wait_on_lock으로 지정
    // lock holder의 donors list에 현재 thread에만 삽입
-   if (lock->holder)
+   if (lock->holder){
+      curr->wait_on_lock = lock;    // 현재 스레드의 wait_on_lock으로 지정
       list_insert_ordered(&lock->holder->donations, &curr->donation_elem, priority_larger, DONATION_LIST);
-   donate_priority(); 
-    
+      donate_priority();
+   }
    sema_down(&lock->semaphore); 
    curr->wait_on_lock = NULL;
    lock->holder = thread_current();

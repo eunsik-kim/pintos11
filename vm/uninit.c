@@ -69,10 +69,8 @@ uninit_destroy (struct page *page) {
 	if (page->type & VM_MMAP) {	
 		// delete mmap_list
 		struct lazy_load_data *data = page->uninit.aux;
-		if (data->mmap_list && list_empty(data->mmap_list)) {
-			free(data->mmap_list);
-			inode_close(data->inode);
-		}
+		inode_close(data->inode);
+		free(data);
 	}
 	return;
 }

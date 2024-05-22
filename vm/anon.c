@@ -80,11 +80,11 @@ anon_initializer (struct page *page, enum vm_type type, void *kva) {
 /* Swap in the page by read contents from the swap disk. */
 static bool
 anon_swap_in (struct page *page, void *kva) {
-	// if (page->type & VM_NOSWAP) {
-	// 	page->type &= ~VM_NOSWAP;
-	// 	memset(page->frame->kva, 0, PGSIZE);
-	// 	return true;
-	// }
+	if (page->type & VM_NOSWAP) {
+		page->type &= ~VM_NOSWAP;
+		memset(page->frame->kva, 0, PGSIZE);
+		return true;
+	}
 
 	size_t readb = 0;
 	size_t size = PGSIZE;
@@ -114,11 +114,11 @@ static bool
 anon_swap_out (struct page *page) {
 	ASSERT(page->frame && (page->type & VM_FRAME));
 	// not bss and not dirty (no need since malloc isn't impl)
-	// if (!(page->type & VM_BSS) && !((page->type & VM_DIRTY) || pml4_is_dirty(page->pml4, page->va))) {
-	// 	page->type |= VM_NOSWAP;
-	//	add disable_redundant_frame
-	// 	return true;	
-	// }
+	if (!(page->type & VM_BSS) && !((page->type & VM_DIRTY) || pml4_is_dirty(page->pml4, page->va))) {
+		page->type |= VM_NOSWAP;
+		// add disable_redundant_frame
+		return true;	
+	}
 
 	// similar to palloc_get_multiple but find policy is next-fit
 	size_t start = next_fit_idx;

@@ -636,18 +636,15 @@ void *mmap(void *addr, size_t length, int writable, int fd, off_t offset)
 		return NULL;
 
 	struct file *cur_file = params.file;
-	inode_reopen(cur_file->inode);
 	uint64_t file_len = file_length(cur_file);
 	if (is_user_vaddr(cur_file) || (file_len == 0))	
 		return NULL;
 
-	// munmap에 사용되는 mmap_list 생성	
-	size_t zerob = (file_len % PGSIZE) ? PGSIZE - file_len % PGSIZE : 0;
-	struct list *mmap_list = (struct list *)malloc(sizeof (struct list));
-	list_init(mmap_list);
 	writable = (writable) ? 1 : 0;
-	uint64_t result = (uint64_t)writable | (uint64_t)mmap_list; 
-	if (!load_segment(cur_file, offset, addr, file_len, zerob, result))
+	cur_file = (uint64_t)cur_file | 1;	// packing to verify mmap call
+	length = offset + length > file_len ? file_len : length;	// 파일 최대 길이 까지만 읽기
+	size_t zerob = (length % PGSIZE) ? PGSIZE - length % PGSIZE : 0;	
+	if (!load_segment(cur_file, offset, addr, length, zerob, writable))
 		return NULL;
 
 	return addr;
@@ -657,16 +654,14 @@ void *mmap(void *addr, size_t length, int writable, int fd, off_t offset)
 void munmap(void *addr)
 {	
 	struct thread *cur = thread_current();
-	struct page *tpage, *mpage = spt_find_page(&cur->spt, addr);
-	if (mpage == NULL || !(mpage->type & VM_MMAP))
+	struct page *mpage = spt_find_page(&cur->spt, addr);
+	if (!mpage || !(mpage->type & VM_MMAP))
 		return;
 
-	struct list *mmap_list = mpage->file.data->mmap_list;
-	int length = list_size(mmap_list);
-	while(length--) {
-		struct file_page *fpage = list_entry(list_pop_front(mmap_list), 
-														struct file_page, mmap_elem);
-		tpage = (uint64_t)fpage - offsetof(struct page, file);	// shift offset to find page 
-		spt_remove_page(&cur->spt, tpage);
+	int pg_cnt = mpage->file.data->pg_cnt;
+	while(pg_cnt--) {
+		spt_remove_page(&cur->spt, mpage);
+		addr += PGSIZE;
+		mpage = spt_find_page(&cur->spt, addr);
 	}
 }

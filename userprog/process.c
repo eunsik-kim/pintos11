@@ -826,13 +826,20 @@ lazy_load_segment(struct page *page, void *aux)
  * or disk read error occurs. */
 bool
 load_segment(struct file *file, off_t ofs, uint8_t *upage,
-			 uint32_t read_bytes, uint32_t zero_bytes, uint64_t writable)
+			 uint32_t read_bytes, uint32_t zero_bytes, bool writable)
 {
 	ASSERT((read_bytes + zero_bytes) % PGSIZE == 0);
 	ASSERT(pg_ofs(upage) == 0);
 	ASSERT(ofs % PGSIZE == 0);
-	struct thread *cur = thread_current();
+
 	int cnt = 0;
+	enum vm_type ty = VM_FILE; 
+	struct lazy_load_data *data;
+	if ((uint64_t)file & 1) {	// check mmap call
+		file = (uint64_t)file & ~1;
+		ty |= VM_MMAP; 
+	}
+	
 	while (read_bytes > 0 || zero_bytes > 0)
 	{
 		/* Do calculate how to fill this page.
@@ -840,19 +847,25 @@ load_segment(struct file *file, off_t ofs, uint8_t *upage,
 		 * and zero the final PAGE_ZERO_BYTES bytes. */
 		size_t page_read_bytes = read_bytes < PGSIZE ? read_bytes : PGSIZE;
 		size_t page_zero_bytes = PGSIZE - page_read_bytes;
-		struct lazy_load_data *data = (struct lazy_load_data *)
-										calloc(1, sizeof(struct lazy_load_data));
-		cnt++;										
+		if (!(data = (struct lazy_load_data *) malloc(sizeof(struct lazy_load_data))))
+			return false;
+
 		data->ofs = ofs;
-		void *aux = data;
+		data->pg_cnt = 0;
 		data->inode = file->inode;
 		data->readb = page_read_bytes;
+		if (!cnt++ && (ty & VM_MMAP)) 	// record mmap pg cnt
+			data->pg_cnt = read_bytes % PGSIZE ? read_bytes / PGSIZE + 1: read_bytes / PGSIZE;
+
+		if (ty & VM_MMAP)
+			inode_reopen(file->inode);
 
 		/* TODO: Set up aux to pass information to the lazy_load_segment. */
-		if (!vm_alloc_page_with_initializer(VM_FILE, upage,
-											writable, lazy_load_segment, aux))
+		if (!vm_alloc_page_with_initializer(ty, upage,
+											writable, lazy_load_segment, data))
 		{	// delete page to reduce memory leak
 			while (cnt--) {
+				struct thread *cur = thread_current();
 				struct page *dpage = spt_find_page(&cur->spt, upage);
 				if (dpage)
 					spt_remove_page(&cur->spt, dpage);
@@ -863,8 +876,8 @@ load_segment(struct file *file, off_t ofs, uint8_t *upage,
 		/* Advance. */
 		read_bytes -= page_read_bytes;
 		zero_bytes -= page_zero_bytes;
-		ofs += PGSIZE;
 		upage += PGSIZE;
+		ofs += PGSIZE;
 	}
 	return true;
 }

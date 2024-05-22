@@ -9,7 +9,7 @@
 
 static struct frame_table ftb;
 static struct hash cpy_mmap_list;
-
+static struct lock cp_lock; 		// for cp wrt
 /* Initializes the virtual memory subsystem by invoking each subsystem's
  * intialize codes. */
 void
@@ -23,6 +23,7 @@ vm_init (void) {
 	/* DO NOT MODIFY UPPER LINES. */
 	/* TODO: Your code goes here. */
 	hash_init(&ftb.frames, frame_hash, frame_less, NULL);
+	lock_init(&cp_lock);
 }
 
 /* Helpers */
@@ -34,7 +35,7 @@ static struct frame *vm_evict_frame (void);
  * page, do not create it directly and make it through this function or
  * `vm_alloc_page`. */
 bool
-vm_alloc_page_with_initializer (enum vm_type type, void *upage, uint64_t writable,
+vm_alloc_page_with_initializer (enum vm_type type, void *upage, bool writable,
 		vm_initializer *init, void *aux) {
 
 	ASSERT (VM_TYPE(type) != VM_UNINIT)
@@ -46,7 +47,7 @@ vm_alloc_page_with_initializer (enum vm_type type, void *upage, uint64_t writabl
 		/* TODO: Create the page, fetch the initialier according to the VM type,
 		 * TODO: and then create "uninit" page struct by calling uninit_new. You
 		 * TODO: should modify the field after calling the uninit_new. */
-		struct page *new_page = (struct page *) calloc(1, sizeof(struct page));
+		struct page *new_page = (struct page *) malloc(sizeof(struct page));
 		if (new_page == NULL)
 			return false;
 
@@ -58,21 +59,14 @@ vm_alloc_page_with_initializer (enum vm_type type, void *upage, uint64_t writabl
 		else 
 			PANIC("Initializer not implemented ");
 
-		if (type & VM_FILE) {
-			if (writable >= VM_MMAP) {
-				struct lazy_load_data *data = aux;
-				data->mmap_list = writable & ~1;
-				type = type | VM_MMAP;
-			} else if (writable & 1)	{ // bss segment
-				initializer = anon_initializer;	
-				type &= ~VM_FILE;
-				type |= VM_ANON | VM_BSS;
-			}
+		if ((type & VM_FILE) && !(type & VM_MMAP) && writable) { // bss segment
+			initializer = anon_initializer;	
+			type &= ~VM_FILE;
+			type |= VM_ANON | VM_BSS;
 		}
 		type = (writable & 1) ? type | VM_WRITABLE : type;
 		type = (type & VM_STACK) ? type |= VM_DIRTY : type;
 		uninit_new(new_page, pg_round_down(upage), init, type, aux, initializer);
-		// make circular linked list to find child process which is forked by parent in swaped state
 		circular_list_init(&new_page->cp_elem);
 		new_page->pml4 = cur->pml4;
 
@@ -121,22 +115,27 @@ vm_get_victim (void) {
 	struct frame *nframe, *victim = NULL;
 	/* TODO: The policy for eviction is up to you. */
 	struct hash_iterator i;
+	bool not_sharing_frame = false;
 	struct thread *cur = thread_current();
 	hash_first(&i, &ftb.frames);
-	while (1) {
-		if (!hash_next(&i)){
-			hash_first(&i, &ftb.frames);
-			hash_next(&i);
-		}
+	while (victim == NULL) {
+		while (victim == NULL) {
+			if (!hash_next(&i)){
+				hash_first(&i, &ftb.frames);
+				hash_next(&i);
+			}
 
-		nframe = hash_entry(hash_cur(&i), struct frame, hash_elem);
-		/* using clock algorithm */
-		if (pml4_is_accessed(cur->pml4, nframe->page->va))
-			pml4_set_accessed(cur->pml4, nframe->page->va, false);
-		else {
-			victim = nframe;
-			break;
+			nframe = hash_entry(hash_cur(&i), struct frame, hash_elem);
+			/* using clock algorithm */
+			if (pml4_is_accessed(cur->pml4, nframe->page->va))
+				pml4_set_accessed(cur->pml4, nframe->page->va, false);
+			else if (not_sharing_frame || !is_alone(&nframe->page->cp_elem)) {
+				victim = nframe;
+			} else {
+				victim = nframe;
+			}
 		}
+		not_sharing_frame = true;
 	}
 	return victim;
 }
@@ -180,21 +179,23 @@ vm_handle_wp (struct page *page) {
 		return false;
 	page->type &= ~VM_CPWRITE;
 	page->type |= VM_DIRTY;
-
+	lock_acquire(&cp_lock);
 	// cp on wrt
 	if (is_alone(&page->cp_elem)){		// use frame alone
+		lock_release(&cp_lock);
 		if (!pml4_set_page(cur->pml4, page->va, page->frame->kva, 1))
 			return false;
 		return true;
 	}
 	list_remove(&page->cp_elem); 	// delete redundant refer
-
-	struct frame *new_frame = vm_get_frame();	
+	struct frame *new_frame = vm_get_frame();
+	lock_release(&cp_lock);	
 	memcpy(new_frame->kva, page->frame->kva, PGSIZE);
 	page->frame = new_frame;
 	new_frame->page = page;
 	if (!pml4_set_page(cur->pml4, page->va, new_frame->kva, 1))
 		return false;
+	
 	return true;	
 }
 
@@ -255,8 +256,9 @@ vm_try_handle_fault (struct intr_frame *f, void *addr, bool user,
 	{
 	case (VM_FRAME | VM_FILE):
 	case (VM_FRAME | VM_ANON):
-		if (write && vm_handle_wp(page))
+		if (write && vm_handle_wp(page)) 
 			return true;
+		
 		return false;
 	case VM_ANON:			// swap
 	case VM_FILE:			// disk
@@ -300,62 +302,23 @@ vm_do_claim_page (struct page *page) {
 	return swap_in (page, frame->kva);
 }
 
-/* cpy_mmap_list destory할때 사용하는 함수 */
-void mm_free_frame(struct hash_elem *e, void *aux UNUSED) {	
-	struct frame *mm_list_elem = hash_entry(e, struct frame, hash_elem);
-	free(mm_list_elem);
-}
-
 /* Copy supplemental page table from src to dst */
 bool
 supplemental_page_table_copy (struct supplemental_page_table *dst,
 		struct supplemental_page_table *src) {
-
-	hash_init(&cpy_mmap_list, frame_hash, frame_less, NULL);
-	bool flg = hash_apply(&src->pages, hash_copy_action);
-	hash_destroy(&cpy_mmap_list, mm_free_frame);
-	return flg;
-}
-
-/* hash 안에서 mmap_list와 new mmap_list는 1-1, 해당 mmap_list 찾아서 return */
-struct list *find_new_mmap_list(struct page *src_page)
-{
-	struct frame *find_frame, *label_frame = calloc(1, sizeof(struct frame));
-	if (label_frame == NULL)
-		return NULL;
-
-	struct list *mmap_list;
-	label_frame->kva = src_page->file.data->mmap_list;
-	struct hash_elem *find_elem = hash_find(&cpy_mmap_list, label_frame);
-	// hash안에 없는경우 새롭게 생성 후 hash에 삽입, 찾으면 mmap_list return
-	if (!find_elem) {	
-		if ((mmap_list = (struct list *)malloc(sizeof (struct list))) == NULL)
-			return NULL;
-
-		// initialize mmap_list 
-		list_init(mmap_list);
-		label_frame->page = (void *)mmap_list;
-		struct inode *inode = src_page->file.data->inode;
-		inode_reopen(inode);
-		hash_insert(&cpy_mmap_list, label_frame);
-	} else {
-		find_frame = hash_entry(find_elem, struct frame, hash_elem);
-		mmap_list = (struct list *)find_frame->page;
-	}
-	return mmap_list;
+	return hash_apply(&src->pages, hash_copy_action);
 }
 
 /*
  * 1. uninit인 경우 2. frame에 존재하는 경우, 3.disk or SWAP에 존재하는경우
- * 각 page의 lazy_load_data, mmap_list 복사, frame은 vm_handle_wp에서 복사 되도록 설정 
+ * 각 page의 lazy_load_data 복사, frame은 vm_handle_wp에서 복사 되도록 설정 
  */
 bool hash_copy_action(struct hash_elem *e, void *aux UNUSED)
 {	
-	struct list *mmap_list;	
 	struct lazy_load_data *cp_aux;
 	struct thread *cur = thread_current();
 	struct page *src_page = hash_entry(e, struct page, hash_elem);
-	struct page *dst_page = (struct page *) calloc(1, sizeof(struct page));
+	struct page *dst_page = (struct page *) malloc(sizeof(struct page));
 	
 	// cp and init page
 	memcpy(dst_page, src_page, sizeof(struct page));
@@ -365,31 +328,23 @@ bool hash_copy_action(struct hash_elem *e, void *aux UNUSED)
 	enum vm_type ty = VM_TYPE(src_page->type);
 	enum vm_type uninit_type = src_page->operations->type;
 
-	if ((uninit_type == VM_UNINIT) || (ty & VM_FILE))
-	{
+	if (uninit_type == VM_UNINIT) {
 		// aux copy for lazy load
 		if (!(cp_aux = (struct lazy_load_data *)malloc(sizeof(struct lazy_load_data))))
 			return false;
-		
-		if (uninit_type == VM_UNINIT){
-			memcpy(cp_aux, src_page->uninit.aux, sizeof(struct lazy_load_data));
-			dst_page->uninit.aux = cp_aux;	
-		} else {
-			memcpy(cp_aux, src_page->file.data, sizeof(struct lazy_load_data));
-			dst_page->file.data = cp_aux;	
-		}
-		
-		// cp mmap_list for munmap call
-		if (src_page->type & VM_MMAP) {
-			if ((mmap_list = find_new_mmap_list(src_page)) == NULL)
-				return false;
 
-			cp_aux->mmap_list = mmap_list;
-			if (uninit_type == VM_UNINIT) // uninit is not listed in mmap_list
-				goto end;
-			list_push_back(mmap_list, &dst_page->file.mmap_elem);	
-		}
-	}
+		memcpy(cp_aux, src_page->uninit.aux, sizeof(struct lazy_load_data));
+		dst_page->uninit.aux = cp_aux;
+		goto end;
+		
+	} else if (ty & VM_FILE) {
+		// aux copy for lazy load
+		if (!(cp_aux = (struct lazy_load_data *)malloc(sizeof(struct lazy_load_data))))
+			return false;
+
+		memcpy(cp_aux, src_page->file.data, sizeof(struct lazy_load_data));
+		dst_page->file.data = cp_aux;	
+	}	
 
 	switch (VM_TYPE(src_page->type))
 	{	
