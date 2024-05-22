@@ -91,7 +91,7 @@ void syscall_init(void)
 	write_msr(MSR_SYSCALL_MASK,
 			  FLAG_IF | FLAG_TF | FLAG_DF | FLAG_IOPL | FLAG_AC | FLAG_NT);
 	lock_init(&filesys_lock);
-	stdin_ptr = (0x123456780);
+	stdin_ptr = (0x123456780);		// no mean, just for fun
 	stdout_ptr = stdin_ptr + 8;
 	stderr_ptr = stdin_ptr + 16;
 }
@@ -99,7 +99,8 @@ void syscall_init(void)
 /* The main system call interface */
 void syscall_handler(struct intr_frame *f)
 {	
-	int syscall = f->R.rax;		
+	int syscall = f->R.rax;
+	thread_current()->last_rsp = f->rsp;		
 	switch (syscall)
 	{
 		case SYS_HALT:
@@ -157,6 +158,7 @@ void syscall_handler(struct intr_frame *f)
 			printf("We don't implemented yet.");
 			break;
 	}
+	thread_current()->last_rsp = NULL;
 }
 
 /*
@@ -203,10 +205,9 @@ bool find_file_in_page(struct func_params *params, struct list *ls)
 {	
 	struct fpage *table;
 	struct list_elem *start_elem = list_head(ls);
-	int i;
 	while ((start_elem = list_next(start_elem)) != list_tail(ls)) {
 		table = list_entry(start_elem, struct fpage, elem);
-		for (i = table->s_elem; i < table->e_elem; i++) 
+		for (int i = table->s_elem; i < table->e_elem; i++) 
 			if (table->d.fdt[i].fd == params->fd){
 				params->file = table->d.fdt[i].fety->file;
 				params->find_page = table;
@@ -248,9 +249,9 @@ void update_offset(struct fpage *table, int i, call_type type)
  */
 bool open_fety_fdt_in_page(struct func_params *params, struct thread *t)
 {
-	struct fpage *fet_table, *fdt_table;
-	struct file_entry *new_fety = NULL;
 	struct fdt *new_fdt = NULL;
+	struct file_entry *new_fety = NULL;
+	struct fpage *fet_table, *fdt_table;
 	struct list_elem *start_elem = list_head(&t->fet_list);
 	while (1) {	
 		start_elem = list_next(start_elem);
@@ -284,10 +285,10 @@ bool open_fety_fdt_in_page(struct func_params *params, struct thread *t)
  */
 bool open_fdt_in_page(struct func_params *params, struct thread *t)
 {
+	int new_fd = 0;
 	struct fpage *fdt_table;
 	struct fdt *new_fdt = NULL;
 	struct list_elem *start_elem = list_head(&t->fdt_list);
-	int new_fd = 0;
 	while (1) {
 		start_elem = list_next(start_elem);
 		if ((fdt_table = add_page_to_list(start_elem, &t->fdt_list)) == NULL)
@@ -314,9 +315,9 @@ bool open_fdt_in_page(struct func_params *params, struct thread *t)
  * 입력시 params에 fd+1, 출력시 find_page, offset 저장
  */
 bool delete_fety_fdt_in_page(struct func_params *params, struct thread *t){
-	struct fpage *fdt_table, *fet_table;
 	struct fdt *new_fdt;
 	struct file_entry *new_fety;
+	struct fpage *fdt_table, *fet_table;
 	struct list_elem *start_elem = list_head(&t->fdt_list);
 
 	while ((start_elem = list_next(start_elem)) != list_tail(&t->fdt_list)) {
@@ -449,6 +450,7 @@ int open(const char *file)
 	lock_release(&filesys_lock);
 	if (file_entity == NULL) 	// wrong file name or oom or not in disk (initialized from arg -p)
 		return -1;
+
 	// find file_entry
 	struct func_params params;
 	params.file = file_entity;
@@ -471,6 +473,7 @@ int filesize(int fd)
 	struct file *cur_file = params.file;
 	if (is_user_vaddr(cur_file)) 
 		return -1;
+
 	return file_length(cur_file);
 }
 
@@ -481,10 +484,11 @@ int read(int fd, void *buffer, unsigned size)
 	params.fd = fd + 1;
 	if (!find_file_in_page(&params, &thread_current()->fdt_list))
 		return -1;
+
 	struct file *cur_file = params.file;
-	
 	if (cur_file != stdin_ptr && is_user_vaddr(cur_file))  // wrong fd
 		return -1; 
+
 	if (size == 0) // not read
 		return 0; 
 
@@ -494,13 +498,11 @@ int read(int fd, void *buffer, unsigned size)
 	if (cur_file == stdin_ptr)
 	{
 		uint8_t byte;
-		while (size--)
-		{
+		while (size--) {
 			byte = input_getc();	  // console 입력을 받아
 			*(char *)buffer++ = byte; // 1byte씩 저장
 		}
-	} else
-	{
+	} else {
 		if (cur_file->pos == inode_length(cur_file->inode)) // end of file
 			return 0;
 
@@ -515,10 +517,9 @@ int read(int fd, void *buffer, unsigned size)
 /* fd값에 따라 적은 만큼 byte(<=length)값 반환, 못 적는 경우 -1 반환 */
 int write(int fd, const void *buffer, unsigned size)
 {
-	struct thread *cur = thread_current();	
 	struct func_params params;
 	params.fd = fd + 1;
-	if (!find_file_in_page(&params, &cur->fdt_list))
+	if (!find_file_in_page(&params, &thread_current()->fdt_list))
 		return -1;
 	struct file *cur_file = params.file;
 	
@@ -531,8 +532,7 @@ int write(int fd, const void *buffer, unsigned size)
 	{
 		int iter_cnt = size / MAX_STDOUT + 1;
 		int less_size;
-		while (iter_cnt--)
-		{ // 입력 buffer가 512보다 큰경우 slicing 해서 출력 
+		while (iter_cnt--) { // 입력 buffer가 512보다 큰경우 slicing 해서 출력 
 			less_size = (size > MAX_STDOUT) ? MAX_STDOUT : size;
 			putbuf(buffer, less_size);
 			buffer += less_size;
@@ -547,7 +547,6 @@ int write(int fd, const void *buffer, unsigned size)
 		bytes_write = file_write(cur_file, buffer, size);
 		lock_release(&filesys_lock);
 	}  
-		
 	return bytes_write;
 }
 
@@ -561,6 +560,7 @@ void seek(int fd, unsigned position)
 	params.fd = fd + 1;
 	if (!find_file_in_page(&params, &thread_current()->fdt_list))
 		return -1;
+
 	struct file *cur_file = params.file;
 	if (is_user_vaddr(cur_file)) return;
 	file_seek(cur_file, position);
@@ -573,8 +573,11 @@ unsigned tell(int fd)
 	params.fd = fd + 1;
 	if (!find_file_in_page(&params, &thread_current()->fdt_list))
 		return -1;
+
 	struct file *cur_file = params.file;
-	if (is_user_vaddr(cur_file)) return -1;
+	if (is_user_vaddr(cur_file)) 
+		return -1;
+
 	return file_tell(cur_file);
 }
 
@@ -592,14 +595,15 @@ void close(int fd)
  */
 int dup2(int oldfd, int newfd) 
 {	
-	struct thread *t = thread_current();
 	struct func_params params;
+	struct thread *t = thread_current();
 	params.fd = oldfd + 1;
 	if (!find_file_in_page(&params, &t->fdt_list))
 		return -1;
 
 	if (oldfd == newfd)
 		return newfd;
+
 	struct file_entry *new_fety = params.find_page->d.fdt[params.offset].fety;
 	new_fety->refc++;
 	params.fd = newfd + 1;
@@ -607,9 +611,7 @@ int dup2(int oldfd, int newfd)
 	if (delete_fety_fdt_in_page(&params, t)){ 
 		params.find_page->d.fdt[params.offset].fety = new_fety;
 		params.find_page->d.fdt[params.offset].fd = newfd + 1;
-	}
-	else // newfd에 해당하는 fdt를 새롭게 생성 
-	{	
+	} else { // newfd에 해당하는 fdt를 새롭게 생성 	
 		params.fety = new_fety;
 		if (!open_fdt_in_page(&params, t))
 			return -1;
@@ -622,13 +624,12 @@ int dup2(int oldfd, int newfd)
 lazy load, 메모리 중복 검사 및 다수의 예외 처리 포함 */
 void *mmap(void *addr, size_t length, int writable, int fd, off_t offset)
 {		
-	size_t out = addr + length;
+	// 불가능 예외처리...
 	if ((addr == NULL) || ((uint64_t)addr % PGSIZE != 0) || (length == 0) 
 		|| (offset % PGSIZE != 0) || is_kernel_vaddr(addr) 
 			|| (is_kernel_vaddr(length)) || is_kernel_vaddr(addr + length)) 
 		return NULL;
 
-	struct thread *cur = thread_current();
 	struct func_params params;
 	params.fd = fd + 1;
 	if (!find_file_in_page(&params, &thread_current()->fdt_list))
@@ -640,11 +641,12 @@ void *mmap(void *addr, size_t length, int writable, int fd, off_t offset)
 	if (is_user_vaddr(cur_file) || (file_len == 0))	
 		return NULL;
 
+	// munmap에 사용되는 mmap_list 생성	
 	size_t zerob = (file_len % PGSIZE) ? PGSIZE - file_len % PGSIZE : 0;
 	struct list *mmap_list = (struct list *)malloc(sizeof (struct list));
 	list_init(mmap_list);
 	writable = (writable) ? 1 : 0;
-	uint64_t result = (uint64_t)writable + (uint64_t)mmap_list; 
+	uint64_t result = (uint64_t)writable | (uint64_t)mmap_list; 
 	if (!load_segment(cur_file, offset, addr, file_len, zerob, result))
 		return NULL;
 
@@ -656,16 +658,15 @@ void munmap(void *addr)
 {	
 	struct thread *cur = thread_current();
 	struct page *tpage, *mpage = spt_find_page(&cur->spt, addr);
-	if (mpage == NULL || !(mpage->type & VM_FILE))
+	if (mpage == NULL || !(mpage->type & VM_MMAP))
 		return;
-	
+
 	struct list *mmap_list = mpage->file.data->mmap_list;
 	int length = list_size(mmap_list);
 	while(length--) {
 		struct file_page *fpage = list_entry(list_pop_front(mmap_list), 
 														struct file_page, mmap_elem);
-		struct hash_elem *he = (uint64_t)fpage - 16;
-		tpage = hash_entry(he, struct page, hash_elem);
+		tpage = (uint64_t)fpage - offsetof(struct page, file);	// shift offset to find page 
 		spt_remove_page(&cur->spt, tpage);
 	}
 }

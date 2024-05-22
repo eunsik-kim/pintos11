@@ -252,6 +252,7 @@ tid_t thread_create(const char *name, int priority,
 
 #ifdef VM
 	supplemental_page_table_init(&t->spt);
+	t->last_rsp = NULL;
 #endif
 
 	/* Call the kernel_thread if it scheduled.

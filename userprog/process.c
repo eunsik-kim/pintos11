@@ -144,7 +144,6 @@ __do_fork(void *aux)
 
 	process_activate(current);
 #ifdef VM
-	parent->spt.pages.aux = parent->pml4;
 	current->stack_bottom = parent->stack_bottom;
 	if (!supplemental_page_table_copy(&current->spt, &parent->spt))
 		goto error;
@@ -191,17 +190,16 @@ int process_exec(void *f_name)
 #ifdef VM
 	struct list inherit_list;
 	list_init(&inherit_list);
-	cur->spt.pages.aux = &inherit_list;
+	cur->spt.pages.aux = &inherit_list;		// mmap page preservation
 	process_cleanup();
 	supplemental_page_table_init(&cur->spt);
-	// page inherit for child process
+	// mmap page inherit
 	while (!list_empty(&inherit_list)) {		
 		struct page *inpage = hash_entry((struct hash_elem *)list_pop_front(&inherit_list), struct page, hash_elem);
 		if (!spt_insert_page(&cur->spt, inpage)
 				&& !pml4_set_page(cur->pml4, inpage->va, inpage->frame->kva, inpage->type & VM_WRITABLE))
 			return -1;
 	}
-
 #else
 	process_cleanup();
 #endif
@@ -211,14 +209,13 @@ int process_exec(void *f_name)
 	int argc = 0;
 
 	ret_ptr = strtok_r(file_name, " ", &next_ptr);
-	while (ret_ptr)
-	{
+	while (ret_ptr) {
 		argv[argc++] = ret_ptr;
 		ret_ptr = strtok_r(NULL, " ", &next_ptr);
 	}
 	
 	/* file load from disk */
-	if (!load(argv[0], &_if)){
+	if (!load(argv[0], &_if)) {
 		palloc_free_page(file_name);
 		return -1;
 	}
@@ -239,8 +236,7 @@ void argument_passing(char *argv[], struct intr_frame *_if, int argc)
 {	
 	// memcpy data argv 
 	size_t total_size = 0;
-	for (int i = argc - 1; i >= 0; i--)
-	{
+	for (int i = argc - 1; i >= 0; i--) {
 		int len = strlen(argv[i]) + 1;
 		_if->rsp -= len;
 		memcpy(_if->rsp, argv[i], len);
@@ -249,8 +245,7 @@ void argument_passing(char *argv[], struct intr_frame *_if, int argc)
 	}
 
 	size_t remainder = (total_size + 8 + 8 * argc) % 16;	
-	if (remainder != 0)
-	{
+	if (remainder != 0) {
 		size_t padding_size = 16 - remainder;
 		_if->rsp -= padding_size;
 		memset(_if->rsp, 0, padding_size);	// argv[0]끝을 16 byte로 memory align
@@ -259,8 +254,7 @@ void argument_passing(char *argv[], struct intr_frame *_if, int argc)
 	memset(_if->rsp, 0, 8);		// padding end of argv ptr 
 
 	// memcpy argv data ptr 
-	for (int i = argc - 1; i >= 0; i--)
-	{
+	for (int i = argc - 1; i >= 0; i--) {
 		_if->rsp -= 8;
 		memcpy(_if->rsp, &argv[i], 8);	
 	}
@@ -282,6 +276,7 @@ bool process_init_fdt(struct thread *t)
 	}
 	list_push_front(&t->fdt_list, &fdt_page->elem);
 	list_push_front(&t->fet_list, &fet_page->elem);
+
 	// defalut fd setting
 	struct file *dummy_ptr[3] = {stdin_ptr, stdout_ptr, stderr_ptr};
 	for (int i = 0; i <= 2; i++) {
@@ -303,19 +298,21 @@ bool process_init_fdt(struct thread *t)
  * fdt_page와 fet_page간 같은 위계를 가지도록 새롭게 만든 page와 이전 page간의 차이를 계산하여 ptr 초기화
  */
 bool process_duplicate_fdt(struct thread *parent, struct thread *child)
-{	
-	struct fpage *nfdt_page, *ofdt_page, *nfet_page, *ofet_page;
+{	\
+	struct fdt *new_fdt;
 	struct file *new_file; 
 	struct file_entry *file_ety;
-	struct fdt *new_fdt;
+	struct fpage *nfdt_page, *ofdt_page, *nfet_page, *ofet_page;
 	struct list_elem *start_elem = list_head(&parent->fet_list);
 	
 	// duplicate file in pages of fet_list
 	while ((start_elem = list_next(start_elem)) != list_tail(&parent->fet_list)) {
+
 		// make new fet_page
 		ofet_page = list_entry(start_elem, struct fpage, elem);	
 		if ((nfet_page = palloc_get_page(PAL_ZERO)) == NULL)
 			return false;
+
 		memcpy(nfet_page, ofet_page, PGSIZE);
 		list_push_back(&child->fet_list, &nfet_page->elem);
 		ofet_page->page_diff = (uint64_t)nfet_page - (uint64_t)ofet_page;	// memorize diff for updating ptr in new_fdt
@@ -333,10 +330,12 @@ bool process_duplicate_fdt(struct thread *parent, struct thread *child)
 	// cpy fdt_list and fet_list
 	start_elem = list_head(&parent->fdt_list);
 	while ((start_elem = list_next(start_elem)) != list_tail(&parent->fdt_list)) {
+
 		// make new fdt_page  
 		ofdt_page = list_entry(start_elem, struct fpage, elem);
 		if ((nfdt_page = palloc_get_page(PAL_ZERO)) == NULL)
 			return false;
+
 		memcpy(nfdt_page, ofdt_page, PGSIZE);
 		list_push_back(&child->fdt_list, &nfdt_page->elem);
 
@@ -784,17 +783,16 @@ install_page(void *upage, void *kpage, bool writable)
  * If you want to implement the function for only project 2, implement it on the
  * upper block. */
 
-static bool
+bool
 lazy_load_segment(struct page *page, void *aux)
 {
 	/* TODO: Load the segment from the file */
 	/* TODO: This called when the first page fault occurs on address VA. */
 	/* TODO: VA is available when calling this function. */
 	/* Get a page of memory. */
-	uint8_t *kpage = page->frame->kva;
+	void *kpage = page->frame->kva;
 	struct lazy_load_data *data = (struct lazy_load_data *)aux;
 	struct inode *inode = data->inode;
-	struct thread *cur = thread_current();
 	ASSERT(kpage && inode && aux);
 
 	size_t ofs = data->ofs;
@@ -805,7 +803,10 @@ lazy_load_segment(struct page *page, void *aux)
 	if (inode_read_at(inode, kpage, page_read_bytes, ofs) != (int)page_read_bytes)
 		return false;
 		
-	memset(kpage + page_read_bytes, 0, page_zero_bytes);
+	memset(kpage + page_read_bytes, 0, page_zero_bytes);	
+	// mmap load data is destoryed in file_backed_destroy
+	if (!(page->type & VM_MMAP))
+		free(data);	
 	return true;
 }
 
@@ -839,20 +840,19 @@ load_segment(struct file *file, off_t ofs, uint8_t *upage,
 		 * and zero the final PAGE_ZERO_BYTES bytes. */
 		size_t page_read_bytes = read_bytes < PGSIZE ? read_bytes : PGSIZE;
 		size_t page_zero_bytes = PGSIZE - page_read_bytes;
-
 		struct lazy_load_data *data = (struct lazy_load_data *)
 										calloc(1, sizeof(struct lazy_load_data));
-		data->inode = file->inode;
+		cnt++;										
 		data->ofs = ofs;
-		data->readb = page_read_bytes;
-		list_push_back(&cur->spt.lazy_list, &data->elem);
-		/* TODO: Set up aux to pass information to the lazy_load_segment. */
 		void *aux = data;
-		cnt++;
+		data->inode = file->inode;
+		data->readb = page_read_bytes;
+
+		/* TODO: Set up aux to pass information to the lazy_load_segment. */
 		if (!vm_alloc_page_with_initializer(VM_FILE, upage,
 											writable, lazy_load_segment, aux))
 		{	// delete page to reduce memory leak
-			while (cnt--){
+			while (cnt--) {
 				struct page *dpage = spt_find_page(&cur->spt, upage);
 				if (dpage)
 					spt_remove_page(&cur->spt, dpage);
@@ -860,7 +860,6 @@ load_segment(struct file *file, off_t ofs, uint8_t *upage,
 			}
 			return false;
 		}
-			
 		/* Advance. */
 		read_bytes -= page_read_bytes;
 		zero_bytes -= page_zero_bytes;

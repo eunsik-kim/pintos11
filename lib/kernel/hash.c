@@ -8,6 +8,7 @@
 #include "hash.h"
 #include "../debug.h"
 #include "threads/malloc.h"
+#include "threads/thread.h"
 
 #define list_elem_to_hash_elem(LIST_ELEM)                       \
 	list_entry(LIST_ELEM, struct hash_elem, list_elem)
@@ -91,6 +92,7 @@ hash_destroy (struct hash *h, hash_action_func *destructor) {
 struct hash_elem *
 hash_insert (struct hash *h, struct hash_elem *new) {
 	lock_acquire(&h->h_lock);
+	struct thread *cur = thread_current();
 	struct list *bucket = find_bucket (h, new);
 	struct hash_elem *old = find_elem (h, bucket, new);
 

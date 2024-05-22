@@ -28,6 +28,8 @@ enum vm_type {
 	VM_CPWRITE = (1<<6),		// cpwrite
 	VM_DIRTY = (1<<7),
 	VM_ACCESS = (1<<8),
+	VM_NOSWAP = (1<<9),
+	VM_BSS = (1<<10),
 	/* DO NOT EXCEED THIS VALUE. */
 	VM_MARKER_END = (1 << 31),
 };
@@ -55,8 +57,10 @@ struct page {
 
 	/* Your implementation */
 	enum vm_type type;
+	uint64_t *pml4;
+	struct list_elem cp_elem;
 	struct hash_elem hash_elem;
-
+	
 	/* Per-type data are binded into the union.
 	 * Each function automatically detects the current union */
 	union {
@@ -70,14 +74,12 @@ struct page {
 };
 
 #include <threads/synch.h>
-
+ 
 /* The representation of "frame" */
 struct frame {
 	struct hash_elem hash_elem;
 	void *kva;
 	struct page *page;
-	bool dirty;
-	int unwritable;
 };
 
 /* frame table for tracking USER frame(page) to evict page */
@@ -108,7 +110,6 @@ struct page_operations {
  * All designs up to you for this. */
 struct supplemental_page_table {
 	struct hash pages;
-	struct list lazy_list;
 };
 
 /* vm */
@@ -118,9 +119,29 @@ bool page_less(const struct hash_elem *a_, const struct hash_elem *b_, void *aux
 unsigned page_hash(const struct hash_elem *p_, void *aux );
 void hash_free_page(struct hash_elem *e, void *aux);
 void mm_free_frame(struct hash_elem *e, void *aux UNUSED);
-bool hash_copy_action(struct hash_elem *e, void *aux);
 bool ftb_delete_frame(struct page *delete_page);
+
+/* stack growth */
 bool vm_stack_growth(void *addr);
+bool check_rsp_valid(void *addr);
+
+/* share and cp page */
+bool hash_copy_action(struct hash_elem *e, void *aux);
+struct list *find_new_mmap_list(struct page *src_page);
+void mm_free_frame(struct hash_elem *e, void *aux UNUSED);
+
+/* sap out & in */
+void disable_redundant_frame(struct page *page);
+void enable_redundant_frame(struct page *page, struct frame *n_frame);
+
+/* check whether page is sharing or not */
+#define is_alone(elem) (((elem)->next) == (elem))
+
+/* initialize for copy elem which is used in hash_copy_action */
+#define circular_list_init(elem) do { \
+    (elem)->next = (elem); \
+    (elem)->prev = (elem); \
+} while (0)
 
 #include "threads/thread.h"
 void supplemental_page_table_init (struct supplemental_page_table *spt);

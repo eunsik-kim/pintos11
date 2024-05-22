@@ -15,9 +15,10 @@ bool process_delete_fdt(struct thread *t);
 bool load_segment(struct file *file, off_t ofs, uint8_t *upage,
 						 uint32_t read_bytes, uint32_t zero_bytes,
 						 uint64_t writable);
+
+bool lazy_load_segment(struct page *page, void *aux);
 struct lazy_load_data 
 {	
-	struct list_elem elem;
 	struct inode *inode;
 	struct list *mmap_list;
 	size_t ofs;

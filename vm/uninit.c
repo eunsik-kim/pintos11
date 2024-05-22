@@ -66,9 +66,13 @@ uninit_destroy (struct page *page) {
 	struct uninit_page *uninit UNUSED = &page->uninit;
 	/* TODO: Fill this function.
 	 * TODO: If you don't have anything to do, just return. */
-	ftb_delete_frame(page);
-	struct lazy_load_data *data = page->uninit.aux;
-	list_remove(&data->elem);
-	free(data);
+	if (page->type & VM_MMAP) {	
+		// delete mmap_list
+		struct lazy_load_data *data = page->uninit.aux;
+		if (data->mmap_list && list_empty(data->mmap_list)) {
+			free(data->mmap_list);
+			inode_close(data->inode);
+		}
+	}
 	return;
 }
