@@ -102,6 +102,7 @@ void syscall_init(void)
 void syscall_handler(struct intr_frame *f)
 {	
 	int syscall = f->R.rax;
+	thread_current()->rsp = f->rsp; // pass stack pointer
 	if ((5 <= syscall) && (syscall <= 13)) 
 		lock_acquire(&filesys_lock);
 	switch (syscall)
@@ -159,6 +160,7 @@ void syscall_handler(struct intr_frame *f)
 	}
 	if ((5 <= syscall) && (syscall <= 13))
 		lock_release(&filesys_lock);
+	thread_current()->rsp = NULL;
 }
 
 /*

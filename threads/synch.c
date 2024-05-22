@@ -197,8 +197,9 @@ void lock_acquire(struct lock *lock)
 
    curr->wait_on_lock = lock;    // 현재 스레드의 wait_on_lock으로 지정
    // lock holder의 donors list에 현재 thread에만 삽입
-   list_insert_ordered(&lock->holder->donations, &curr->donation_elem, priority_larger, DONATION_LIST);
-   donate_priority(); 
+   if (lock->holder) //lock_try_acquire에서 sema_up을 해버리는 경우 예외처리
+      list_insert_ordered(&lock->holder->donations, &curr->donation_elem, priority_larger, DONATION_LIST);
+   donate_priority();
     
    sema_down(&lock->semaphore); 
    curr->wait_on_lock = NULL;
@@ -214,7 +215,7 @@ void donate_priority(void)
 
    for (int i = 0; i < MAX_DONATION_LEVEL; i++)
    {
-      if (curr->wait_on_lock == NULL) // 더이상 중첩되지 않았으면 종료
+      if (curr->wait_on_lock == NULL || curr->wait_on_lock->holder == NULL) // 더이상 중첩되지 않았으면 종료
          return;
       holder = curr->wait_on_lock->holder;      // lock holder의 donors list에 thread elem은 넣지 않아도됨
       holder->priority = priority;

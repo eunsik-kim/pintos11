@@ -6,19 +6,13 @@
 #include "lib/debug.h"
 #include "threads/synch.h"
 
-
-// /* page frames */
-
-
-// extern struct lock frame_lock; // lock for manipulating frame table
-
-
 struct frame_table {
+	
 	struct hash ft_frame_hash;	// frame table
+	struct list ft_list; //
 	struct lock frame_lock; 		//frame_table lock
-};
 
-static struct frame_table frame_table;
+};
 
 enum vm_type {
 	/* page not initialized */
@@ -34,9 +28,9 @@ enum vm_type {
 
 	/* Auxillary bit flag marker for store information. You can add more
 	 * markers, until the value is fit in the int. */
-	VM_STACK = (1 << 3),
-	VM_MARKER_1 = (1 << 4),
-	VM_MARKER_2 = (1 << 5),
+	VM_WRITABLE = (1 << 3),
+	VM_DIRTY = (1 << 4),
+	VM_STACK = (1 << 5),
 	VM_MARKER_3 = (1 << 6),
 	VM_MARKER_4 = (1 << 7),
 
@@ -67,8 +61,7 @@ struct page {
 
 	/* Your implementation */
 	struct hash_elem hash_elem;
-	bool writable;
-	enum vm_type vm_type;
+	enum vm_type type;
 
 	/* Per-type data are binded into the union.
 	 * Each function automatically detects the current union */
@@ -84,9 +77,10 @@ struct page {
 
 /* The representation of "frame" */
 struct frame {
-	void *kva; //kernal virtual address
+	void *kva; //kernal virtual address beware of void pointer
 	struct page *page; //page
 	struct hash_elem hash_elem; //hash table element
+	// int unwritable;
 };
 
 /* The function table for page operations.
@@ -125,6 +119,7 @@ struct page *spt_find_page (struct supplemental_page_table *spt,
 		void *va);
 bool spt_insert_page (struct supplemental_page_table *spt, struct page *page);
 void spt_remove_page (struct supplemental_page_table *spt, struct page *page);
+bool frame_delete(struct page *);
 
 void vm_init (void);
 bool vm_try_handle_fault (struct intr_frame *f, void *addr, bool user,
@@ -137,7 +132,7 @@ bool vm_alloc_page_with_initializer (enum vm_type type, void *upage,
 void vm_dealloc_page (struct page *page);
 bool vm_claim_page (void *va);
 enum vm_type page_get_type (struct page *page);
-
+bool vm_stack_growth (void *addr UNUSED);
 
 #endif  /* VM_VM_H */
 

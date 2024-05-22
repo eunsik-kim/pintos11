@@ -147,6 +147,9 @@ page_fault (struct intr_frame *f) {
 		return;
 #endif
 
+	// handle_stack_growth
+	
+
 	/* Count page faults. */ // count hard page fault(not recovered)
 	page_fault_cnt++;
 

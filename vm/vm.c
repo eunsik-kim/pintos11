@@ -10,6 +10,7 @@
 #include "include/threads/pte.h"
 
 // #include "lib/kernel/bitmap.c"
+static struct frame_table frame_table;
 
 /* Initializes the virtual memory subsystem by invoking each subsystem's
  * intialize codes. */
@@ -68,8 +69,8 @@ vm_alloc_page_with_initializer (enum vm_type type, void *upage, bool writable,
 		if (!page)
 			return false;
 
-		bool(*initializer)(struct page* page, enum vm_type type, void*); //???
-		switch (VM_TYPE(type))
+		bool(*initializer)(struct page* page, enum vm_type type, void*); //set initializer
+		switch (VM_TYPE(type)) // get VM_TYPE between uninit/anon/file
 		{
 			case VM_ANON:
 				initializer = anon_initializer;
@@ -77,17 +78,18 @@ vm_alloc_page_with_initializer (enum vm_type type, void *upage, bool writable,
 			case VM_FILE:
 				initializer = file_backed_initializer;
 				break;
+			default:
+				return false;
 		}
 
 		uninit_new(page, pg_round_down(upage), init, type, aux, initializer);
 
-		page->writable = writable;
+		if (writable)
+			page->type = type | VM_WRITABLE;
 
 		/* TODO: Insert the page into the spt. */
 		return spt_insert_page(spt, page);
-		// struct hash_elem *e = hash_entry(&page->hash_elem ,struct page, hash_elem);
-		// hash_insert(spt, e);
-		// return true;
+
 	}
 err:
 	return false;
@@ -158,10 +160,9 @@ vm_get_frame (void) {
 	/* TODO: Fill this function. */
 	frame = (struct frame*)malloc(sizeof(struct frame)); //allocate physical memory
 	if (frame){
-		frame->kva = palloc_get_page(PAL_USER);
-		frame->page = NULL;
+		frame->kva = palloc_get_page(PAL_USER|PAL_ZERO);
 		ASSERT (frame != NULL);
-		ASSERT (frame->page == NULL);
+		// ASSERT (frame->page == NULL); // after adding PAL_ZERO 
 		lock_acquire(&frame_table.frame_lock);
 		hash_insert(&frame_table.ft_frame_hash, &frame->hash_elem); //insert 하는 과정에서 not_present page fault
 		lock_release(&frame_table.frame_lock);
@@ -172,13 +173,27 @@ vm_get_frame (void) {
 }
 
 /* Growing the stack. */
-static void
+bool
 vm_stack_growth (void *addr UNUSED) {
+	if((USER_STACK - (uint64_t)addr)>=(1<<20)) // out of stack limit. max size 1MB
+		return false;
+	
+	void *stack_bottom = pg_round_down(addr);
+
+	if (!vm_alloc_page(VM_ANON|VM_STACK, stack_bottom, true))
+		return false;
+
+	if (!vm_claim_page(stack_bottom))
+		return false;
+
+	return true;
 }
 
 /* Handle the fault on write_protected page */
 static bool
 vm_handle_wp (struct page *page UNUSED) {
+
+
 }
 
 
@@ -192,21 +207,29 @@ vm_try_handle_fault (struct intr_frame *f UNUSED, void *addr UNUSED,
 		bool user UNUSED, bool write UNUSED, bool not_present UNUSED) {
 	struct supplemental_page_table *spt = &thread_current ()->spt;
 	struct page *page = NULL;
-	/* TODO: Validate the fault */
-	// TODO: check request validity
-	// if (user){
-	// 	if (!is_user_vaddr(addr))
-	// 		return false;
-	// } else {
-	// 	if (!is_kernel_vaddr(addr))
-	// 		return false;
-	// }
+	/* Check Validity
+	/* user -> kernel request or va does not exist */
+	if (user && is_kernel_vaddr(addr) | addr==NULL)
+		return false; //
 
-	/* TODO: Your code goes here */
-	page = spt_find_page(spt, addr); // 
-	if (page) //if found
+	struct thread *cur = thread_current();
+	void* rsp = (void*) user ? f->rsp : cur->rsp;
+
+	if (not_present){
+		/* Case 1) Stack Request */
+		if (not_present && addr<USER_STACK && addr >= USER_STACK - (1<<20) && addr>= f->rsp-8)
+		vm_stack_growth(addr);
+
+	} else {
+		/* Case 2) page info in spt, not loaded yet */
+		page = spt_find_page(spt, addr); // 
+		if (page) //if found
 		return vm_do_claim_page (page); // try to allocate the page in physical memory(frame)
+	}
+	
+
 	return false;
+
 
 }
 
@@ -243,9 +266,10 @@ vm_do_claim_page (struct page *page) {
 	/* Set links */
 	frame->page = page;
 	page->frame = frame;
+	bool writable = (page->type & VM_WRITABLE);
 
 	/* TODO: Insert page table entry to map page's VA to frame's PA. */
-	if(pml4_set_page(thread_current()->pml4, page->va, frame->kva, page->writable)){
+	if(pml4_set_page(thread_current()->pml4, page->va, frame->kva, writable)){
 		/// Add swap_in type for file backed memory
 		return swap_in(page, frame->kva);
 	}
@@ -271,7 +295,7 @@ supplemental_page_table_copy (struct supplemental_page_table *dst UNUSED,
 
 	// initialize dst spt
 	// hash_init(&dst->spt_page_hash, page_hash, page_less, NULL);
-	// lock_init(&dst->hash_lock);
+	// lock_init(&dst->hash_lock);0
 	// lock_acquire(&dst->hash_lock);
 	lock_acquire(&dst->hash_lock);
 
@@ -325,9 +349,8 @@ frame_less(	const struct hash_elem *a_,
 
 struct frame_table *
 frame_table_init(){
-	struct frame_table *frame_table=(struct frame_table*)malloc(sizeof(struct frame_table));
-	hash_init(&frame_table->ft_frame_hash, frame_hash, frame_less, NULL);
-	lock_init(&frame_table->frame_lock);
+	hash_init(&frame_table.ft_frame_hash, frame_hash, frame_less, NULL);
+	lock_init(&frame_table.frame_lock);
 }
 
 
@@ -353,3 +376,19 @@ hash_free_page(struct hash_elem *e, void *aux UNUSED)
 	struct page *p = hash_entry(e, struct page, hash_elem);
 	vm_dealloc_page(p);
 }
+
+/* page & frame 삭제 */
+// bool frame_delete(struct page *delete_page){ 
+// 	struct thread *cur = thread_current();
+// 	if (delete_page->frame){ //if frame exists
+// 		// ASSERT(delete_page->frame->unwritable>=0);
+// 		if (!delete_page->frame->unwritable){
+// 			hash_delete(&frame_table, &delete_page->frame->hash_elem);
+// 			free(delete_page->frame);
+// 		} else{
+// 			delete_page->frame->unwritable--;
+// 			pml4_clear_page(cur->pml4, delete_page->va);
+// 		}
+// 	}
+
+// }

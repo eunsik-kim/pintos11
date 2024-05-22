@@ -863,11 +863,9 @@ setup_stack(struct intr_frame *if_)
 	 * TODO: If success, set the rsp accordingly.
 	 * TODO: You should mark the page is stack. */
 	/* TODO: Your code goes here */
-	if(!vm_alloc_page(VM_ANON|VM_STACK, stack_bottom,true)) // alloc page & insert into spt
-		return false;
-	success = vm_claim_page(stack_bottom); //frame 할당&linking 및 pml4 setting
-	if (success)
-		if_->rsp = USER_STACK;
-	return success;
+	if(!vm_stack_growth(stack_bottom))
+		return success;
+	if_->rsp = USER_STACK;
+	return true;
 }
 #endif /* VM */

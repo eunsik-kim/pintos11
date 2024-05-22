@@ -249,8 +249,16 @@ block_to_arena (struct block *b) {
 	ASSERT (a->magic == ARENA_MAGIC);
 
 	/* Check that the block is properly aligned for the arena. */
+	// printf("---a->desc: %p\n", a->desc);
+	// printf(">desc->blksize: %d\n", a->desc->block_size);
+	// printf("ofs: %d\n", (pg_ofs(b)));
+	// printf("sizeof: %d\n", (sizeof *a));
+	// printf("calculated val: %d",(pg_ofs (b) - sizeof *a) % a->desc->block_size);
+
+
 	ASSERT (a->desc == NULL
 			|| (pg_ofs (b) - sizeof *a) % a->desc->block_size == 0);
+			
 	ASSERT (a->desc != NULL || pg_ofs (b) == sizeof *a);
 
 	return a;
