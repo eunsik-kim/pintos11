@@ -17,6 +17,7 @@ static const struct page_operations file_ops = {
 /* The initializer of file vm */
 void
 vm_file_init (void) {
+	//mmap memory allocation??
 }
 
 /* Initialize the file backed page */
@@ -24,8 +25,8 @@ bool
 file_backed_initializer (struct page *page, enum vm_type type, void *kva) {
 	/* Set up the handler */
 	page->operations = &file_ops;
-
-	struct file_page *file_page = &page->file;
+	page->file.aux = page->uninit.aux; //메모리 영역이 겹쳐도 왼쪽에 값만 제대로 들어가면 되므로 상관없음. 여러 번 하는 경우에는 문제가 생길 수 있다
+	return true;
 }
 
 /* Swap in the page by read contents from the file. */

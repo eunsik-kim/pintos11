@@ -18,5 +18,6 @@ bool process_delete_fdt(struct thread *t);
 struct lazy_load_segment_aux{
     struct file *file;
     off_t ofs;
-    size_t page_read_bytes;    
+    size_t page_read_bytes; 
+    size_t page_zero_bytes;   
 };
