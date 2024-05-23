@@ -32,10 +32,10 @@ uninit_new (struct page *page, void *va, vm_initializer *init,
 	*page = (struct page) {
 		.operations = &uninit_ops,
 		.va = va,
+		.type = type,
 		.frame = NULL, /* no frame for now */
 		.uninit = (struct uninit_page) {
 			.init = init,
-			.type = type,
 			.aux = aux,
 			.page_initializer = initializer,
 		}
@@ -67,5 +67,5 @@ uninit_destroy (struct page *page) {
 	/* TODO: Fill this function.
 	 * TODO: If you don't have anything to do, just return. */
 	if (uninit->aux)
-		free(uninit->aux);	
+		free(uninit->aux);
 }

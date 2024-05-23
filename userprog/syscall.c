@@ -103,8 +103,11 @@ void syscall_handler(struct intr_frame *f)
 {	
 	int syscall = f->R.rax;
 	thread_current()->rsp = f->rsp; // pass stack pointer
-	if ((5 <= syscall) && (syscall <= 13)) 
+	if ((5 <= syscall) && (syscall <= 13))
 		lock_acquire(&filesys_lock);
+	
+	
+	
 	switch (syscall)
 	{
 		case SYS_HALT:
@@ -154,6 +157,11 @@ void syscall_handler(struct intr_frame *f)
 			f->R.rax = dup2(f->R.rdi, f->R.rsi);
 			lock_release(&filesys_lock);
 			break;
+		case SYS_MMAP:
+			
+		case SYS_MUNMAP:
+
+
 		default:
 			printf("We don't implemented yet.");
 			break;
@@ -171,7 +179,8 @@ void check_address(void *uaddr)
 {
 	struct thread *cur = thread_current();
 	if (uaddr == NULL || is_kernel_vaddr(uaddr) || pml4_get_page(cur->pml4, uaddr) == NULL)
-		exit(-1);
+		if (!vm_claim_page(uaddr)) // vm updated line 
+			exit(-1);
 }
 
 /* list를 순회하며 pid를 가지는 thread return, 못찾으면 NULL return */

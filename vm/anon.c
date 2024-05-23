@@ -33,11 +33,7 @@ vm_anon_init (void) {
 	size_t swap_size = disk_size(swap_disk)/PGSIZE*DISK_SECTOR_SIZE;
 	// printf("---swap_disk init size: %d\n", swap_size);
 	swap_bitmap = bitmap_create(swap_size);
-	// if (swap_bitmap){ //initialized in bitmap_create
-	// 	bitmap_set_all(swap_bitmap, false);
-	// } else {
-	// 	PANIC("setting swap_bitmap failed");
-	// }
+
 }
 
 /* Initialize the file mapping */
@@ -75,8 +71,7 @@ anon_swap_out (struct page *page) {
 static void
 anon_destroy (struct page *page) {
 	struct anon_page *anon_page = &page->anon;
-	// ASSERT(page_get_type(page)==VM_ANON);
-	// frame_delete(page);
+	frame_delete(page);
 	return;
 }
 

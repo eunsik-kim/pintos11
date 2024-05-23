@@ -215,7 +215,7 @@ int process_exec(void *f_name)
 
 	_if.R.rdi = argc;
 	_if.R.rsi = (char *)_if.rsp + 8;
-	//hex_dump(_if.rsp, _if.rsp, KERN_BASE - _if.rsp, true);  // debugging
+	// hex_dump(_if.rsp, _if.rsp, KERN_BASE - _if.rsp, true);  // debugging
 	
 	/* Start switched process. */
 	do_iret(&_if);

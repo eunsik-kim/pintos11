@@ -143,12 +143,11 @@ page_fault (struct intr_frame *f) {
 
 #ifdef VM
 	/* For project 3 and later. */
-	if (vm_try_handle_fault (f, fault_addr, user, write, not_present))
+	// bool fault_handle_succ = vm_try_handle_fault (f, fault_addr, user, write, not_present);
+	// if (fault_handle_succ)
+    if (vm_try_handle_fault (f, fault_addr, user, write, not_present))
 		return;
-#endif
-
-	// handle_stack_growth
-	
+#endif	
 
 	/* Count page faults. */ // count hard page fault(not recovered)
 	page_fault_cnt++;

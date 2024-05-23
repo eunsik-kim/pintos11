@@ -25,14 +25,19 @@ enum vm_type {
 	VM_PAGE_CACHE = 3,
 
 	/* Bit flags to store state */
+	VM_FRAME = (1<<3),
 
 	/* Auxillary bit flag marker for store information. You can add more
 	 * markers, until the value is fit in the int. */
-	VM_WRITABLE = (1 << 3),
-	VM_DIRTY = (1 << 4),
-	VM_STACK = (1 << 5),
-	VM_MARKER_3 = (1 << 6),
-	VM_MARKER_4 = (1 << 7),
+	VM_WRITABLE = (1 << 4),
+	VM_ACCESS = (1 << 5),
+	VM_DIRTY = (1 << 6),
+	VM_STACK = (1 << 7),
+	VM_COW = (1 << 8),
+	VM_NOSWAP = (1 << 9),
+	VM_BSS = (1 << 10),
+	VM_MMAP = (1 << 11), //VM_FILE로 쓰면 안되나? 왜 따로..? 리스트 관리용 페이지...??
+	VM_MARKER_4 = (1 << 12),
 
 	/* DO NOT EXCEED THIS VALUE. */
 	VM_MARKER_END = (1 << 31),
@@ -80,7 +85,7 @@ struct frame {
 	void *kva; //kernal virtual address beware of void pointer
 	struct page *page; //page
 	struct hash_elem hash_elem; //hash table element
-	// int unwritable;
+	int unwritable;
 };
 
 /* The function table for page operations.
