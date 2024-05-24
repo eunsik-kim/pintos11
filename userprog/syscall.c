@@ -78,7 +78,12 @@ void update_offset(struct fpage *table, int i, call_type type);
 void write_to_read_page(void *uaddr);
 void *mmap(void *addr, size_t length, int writable, int fd, off_t offset);
 void munmap(void *addr);
-
+bool chdir (const char *dir);
+bool mkdir (const char *dir);
+bool readdir (int fd, char name[READDIR_MAX_LEN + 1]);
+bool isdir (int fd);
+int inumber (int fd);
+int symlink (const char* target, const char* linkpath);
 void syscall_init(void)
 {
 	write_msr(MSR_STAR, ((uint64_t)SEL_UCSEG - 0x10) << 48 |
@@ -665,3 +670,10 @@ void munmap(void *addr)
 		mpage = spt_find_page(&cur->spt, addr);
 	}
 }
+
+bool chdir (const char *dir);
+bool mkdir (const char *dir);
+bool readdir (int fd, char name[READDIR_MAX_LEN + 1]);
+bool isdir (int fd);
+int inumber (int fd);
+int symlink (const char* target, const char* linkpath);

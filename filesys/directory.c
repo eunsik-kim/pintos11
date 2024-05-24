@@ -5,6 +5,7 @@
 #include "filesys/filesys.h"
 #include "filesys/inode.h"
 #include "threads/malloc.h"
+#include "filesys/fat.h"
 
 /* A directory. */
 struct dir {
@@ -13,7 +14,7 @@ struct dir {
 };
 
 /* A single directory entry. */
-struct dir_entry {
+struct dir_entry { 	
 	disk_sector_t inode_sector;         /* Sector number of header. */
 	char name[NAME_MAX + 1];            /* Null terminated file name. */
 	bool in_use;                        /* In use or free? */
@@ -46,7 +47,11 @@ dir_open (struct inode *inode) {
  * Return true if successful, false on failure. */
 struct dir *
 dir_open_root (void) {
+#ifndef EFILESYS
 	return dir_open (inode_open (ROOT_DIR_SECTOR));
+#else
+	return dir_open (inode_open (cluster_to_sector(ROOT_DIR_CLUSTER)));
+#endif
 }
 
 /* Opens and returns a new directory for the same inode as DIR.

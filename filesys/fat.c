@@ -5,6 +5,8 @@
 #include "threads/synch.h"
 #include <stdio.h>
 #include <string.h>
+#include "lib/round.h"
+#include "filesys/directory.h"
 
 /* Should be less than DISK_SECTOR_SIZE */
 struct fat_boot {
@@ -20,8 +22,8 @@ struct fat_boot {
 struct fat_fs {
 	struct fat_boot bs;
 	unsigned int *fat;
-	unsigned int fat_length;
-	disk_sector_t data_start;
+	unsigned int fat_length;	// counts of clusters
+	disk_sector_t data_start;	// sector where to start
 	cluster_t last_clst;
 	struct lock write_lock;
 };
@@ -126,13 +128,15 @@ fat_create (void) {
 
 	// Set up ROOT_DIR_CLST
 	fat_put (ROOT_DIR_CLUSTER, EOChain);
+	if (!dir_create (cluster_to_sector (ROOT_DIR_CLUSTER), 16))
+		PANIC ("FAT create failed due to OOM");
 
 	// Fill up ROOT_DIR_CLUSTER region with 0
-	uint8_t *buf = calloc (1, DISK_SECTOR_SIZE);
-	if (buf == NULL)
-		PANIC ("FAT create failed due to OOM");
-	disk_write (filesys_disk, cluster_to_sector (ROOT_DIR_CLUSTER), buf);
-	free (buf);
+	// uint8_t *buf = calloc (1, DISK_SECTOR_SIZE);
+	// if (buf == NULL)
+	// 	PANIC ("FAT create failed due to OOM");
+	// disk_write (filesys_disk, cluster_to_sector (ROOT_DIR_CLUSTER), buf);
+	// free (buf);
 }
 
 void
@@ -150,9 +154,15 @@ fat_boot_create (void) {
 	};
 }
 
+/* fat_length : 몇개의 cluster가 존재하는지, data_start: 어떤 sector에서 파일을 저장할 수 있는지 
+ 각각 초기화 fat_fs->bs의 정보를 활용*/
 void
 fat_fs_init (void) {
 	/* TODO: Your code goes here. */
+	lock_init(&fat_fs->write_lock);
+	fat_fs->fat_length = DISK_SECTOR_SIZE * fat_fs->bs.fat_sectors / sizeof(cluster_t);
+	fat_fs->data_start = fat_fs->bs.fat_sectors + fat_fs->bs.fat_start;
+	fat_fs->last_clst = ROOT_DIR_CLUSTER + 1;
 }
 
 /*----------------------------------------------------------------------------*/
@@ -165,6 +175,27 @@ fat_fs_init (void) {
 cluster_t
 fat_create_chain (cluster_t clst) {
 	/* TODO: Your code goes here. */
+	lock_acquire(&fat_fs->write_lock);
+	// search next-fit area
+	cluster_t s_clst = fat_fs->last_clst;
+	while (fat_fs->fat[s_clst-1]) {
+		if (++s_clst > fat_fs->fat_length)
+			s_clst = ROOT_DIR_CLUSTER + 0;
+
+		// fail to alloc
+		if (s_clst == fat_fs->last_clst - 1) {
+			lock_release(&fat_fs->write_lock);
+			return 0;
+		}			
+	}
+
+	// append chain
+	fat_fs->last_clst = s_clst;
+	if (clst)
+		fat_fs->fat[clst-1] = s_clst;
+	fat_fs->fat[s_clst-1] = EOChain;
+	lock_release(&fat_fs->write_lock);
+	return s_clst;
 }
 
 /* Remove the chain of clusters starting from CLST.
@@ -172,22 +203,54 @@ fat_create_chain (cluster_t clst) {
 void
 fat_remove_chain (cluster_t clst, cluster_t pclst) {
 	/* TODO: Your code goes here. */
+	ASSERT(fat_fs->fat[clst-1]);
+	lock_acquire(&fat_fs->write_lock);
+	if (pclst) 
+		fat_fs->fat[pclst-1] = EOChain;
+	else 
+		clst = pclst;
+	fat_fs->last_clst = clst;
+
+	// clean up chain
+	cluster_t temp = clst;
+	do {
+		temp = fat_fs->fat[clst-1];
+		fat_fs->fat[clst-1] = 0;
+	} while ((clst = temp) != EOChain);
+	lock_release(&fat_fs->write_lock);
 }
 
 /* Update a value in the FAT table. */
 void
 fat_put (cluster_t clst, cluster_t val) {
 	/* TODO: Your code goes here. */
+	lock_acquire(&fat_fs->write_lock);
+	fat_fs->fat[clst-1] = val;
+	lock_release(&fat_fs->write_lock);
 }
 
 /* Fetch a value in the FAT table. */
 cluster_t
 fat_get (cluster_t clst) {
 	/* TODO: Your code goes here. */
+	ASSERT(clst != EOChain);
+	return fat_fs->fat[clst-1];
 }
 
 /* Covert a cluster # to a sector number. */
 disk_sector_t
 cluster_to_sector (cluster_t clst) {
 	/* TODO: Your code goes here. */
+	disk_sector_t out = fat_fs->data_start + (clst - 1) * SECTORS_PER_CLUSTER;
+	return out;
+}
+
+/* Covert a sector number # a sector number. */
+cluster_t
+sector_to_cluster (disk_sector_t sector) {
+	if (sector - fat_fs->data_start < 0)
+		return 0;
+
+	cluster_t out = (sector - fat_fs->data_start) / SECTORS_PER_CLUSTER + 1;
+	return out;
 }

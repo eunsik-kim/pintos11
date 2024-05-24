@@ -148,6 +148,13 @@ page_fault (struct intr_frame *f) {
 	exit(-1);	// just for tests/vm/pt-grow-bad
 #endif
 
+#ifdef EFILESYS
+	/* For project 3 and later. */
+	if (vm_try_handle_fault (f, fault_addr, user, write, not_present))
+		return;		
+	exit(-1);	// just for tests/vm/pt-grow-bad
+#endif
+
 #ifdef USERPROG
 	check_address(f->R.rax);
 #endif
