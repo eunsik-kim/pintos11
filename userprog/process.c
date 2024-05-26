@@ -151,6 +151,8 @@ __do_fork(void *aux)
 	if (!pml4_for_each(parent->pml4, duplicate_pte, parent))	// pml4의 page복사
 		goto error;
 #endif
+	dir_close(current->cwd);
+	current->cwd = dir_reopen(parent->cwd);
 
 	// duplicate fdt & file
 	process_init();
@@ -203,11 +205,12 @@ int process_exec(void *f_name)
 #else
 	process_cleanup();
 #endif
+	cur->cwd = dir_open_root();
 
 	/* filename 파싱 시작 */
 	char *next_ptr, *ret_ptr, *argv[64];
 	int argc = 0;
-
+	
 	ret_ptr = strtok_r(file_name, " ", &next_ptr);
 	while (ret_ptr) {
 		argv[argc++] = ret_ptr;
@@ -372,7 +375,10 @@ bool process_delete_fdt(struct thread *t)
 		for (int i = table->s_elem; i < table->e_elem; i++) {
 			cur_file = table->d.fet[i].file;
 			if (is_user_vaddr(cur_file)) continue; // skip null or stdin, stdout, stderr
-			file_close(cur_file);
+			if (checkdir(cur_file))
+				dir_close(getptr(cur_file));
+			else
+				file_close(cur_file);
 		}
 		palloc_free_page(table);
 	}
@@ -423,6 +429,11 @@ process_cleanup(void)
 	if (filesys_lock.holder == curr)
 		lock_release(&filesys_lock);
 
+	if (curr->cwd) {
+		cwd_cnt_down(curr->cwd);
+		dir_close(curr->cwd);
+	}
+		
 #ifdef VM
 	supplemental_page_table_kill(&curr->spt);
 #endif
@@ -840,6 +851,11 @@ load_segment(struct file *file, off_t ofs, uint8_t *upage,
 		ty |= VM_MMAP; 
 	}
 	
+	if (!(ty & VM_MMAP) && writable) { // bss segment
+		ty &= ~VM_FILE;
+		ty |= VM_ANON | VM_BSS;
+	}
+
 	while (read_bytes > 0 || zero_bytes > 0)
 	{
 		/* Do calculate how to fill this page.

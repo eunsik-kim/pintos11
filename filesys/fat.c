@@ -4,7 +4,6 @@
 #include "threads/malloc.h"
 #include "threads/synch.h"
 #include <stdio.h>
-#include <string.h>
 #include "lib/round.h"
 #include "filesys/directory.h"
 
@@ -127,11 +126,11 @@ fat_create (void) {
 		PANIC ("FAT creation failed");
 
 	// Set up ROOT_DIR_CLST
-	fat_put (ROOT_DIR_CLUSTER, EOChain);
-	if (!dir_create (cluster_to_sector (ROOT_DIR_CLUSTER), 16))
-		PANIC ("FAT create failed due to OOM");
+	// fat_put (ROOT_DIR_CLUSTER, EOChain);
+	if (!fat_get(ROOT_DIR_CLUSTER))
+		dir_create (cluster_to_sector (ROOT_DIR_CLUSTER), 16, cluster_to_sector (ROOT_DIR_CLUSTER));
 
-	// Fill up ROOT_DIR_CLUSTER region with 0
+	// // Fill up ROOT_DIR_CLUSTER region with 0
 	// uint8_t *buf = calloc (1, DISK_SECTOR_SIZE);
 	// if (buf == NULL)
 	// 	PANIC ("FAT create failed due to OOM");
@@ -159,9 +158,11 @@ fat_boot_create (void) {
 void
 fat_fs_init (void) {
 	/* TODO: Your code goes here. */
-	lock_init(&fat_fs->write_lock);
-	fat_fs->fat_length = DISK_SECTOR_SIZE * fat_fs->bs.fat_sectors / sizeof(cluster_t);
-	fat_fs->data_start = fat_fs->bs.fat_sectors + fat_fs->bs.fat_start;
+	lock_init(&fat_fs->write_lock);	
+	// round up clusters 
+	fat_fs->fat_length = (fat_fs->bs.total_sectors - 1) *  DISK_SECTOR_SIZE 
+							/ (DISK_SECTOR_SIZE + sizeof(cluster_t) * SECTORS_PER_CLUSTER) - 2;
+	fat_fs->data_start = fat_fs->bs.fat_start + (fat_fs->fat_length * sizeof(cluster_t)) / DISK_SECTOR_SIZE + 1;
 	fat_fs->last_clst = ROOT_DIR_CLUSTER + 1;
 }
 
@@ -175,6 +176,7 @@ fat_fs_init (void) {
 cluster_t
 fat_create_chain (cluster_t clst) {
 	/* TODO: Your code goes here. */
+	ASSERT(clst != EOChain);
 	lock_acquire(&fat_fs->write_lock);
 	// search next-fit area
 	cluster_t s_clst = fat_fs->last_clst;
@@ -203,13 +205,16 @@ fat_create_chain (cluster_t clst) {
 void
 fat_remove_chain (cluster_t clst, cluster_t pclst) {
 	/* TODO: Your code goes here. */
-	ASSERT(fat_fs->fat[clst-1]);
+	ASSERT(clst != EOChain && clst);
 	lock_acquire(&fat_fs->write_lock);
+	fat_fs->last_clst = clst;
 	if (pclst) 
 		fat_fs->fat[pclst-1] = EOChain;
-	else 
-		clst = pclst;
-	fat_fs->last_clst = clst;
+	else {
+		fat_fs->fat[clst-1] = 0;
+		return lock_release(&fat_fs->write_lock);
+	}
+		
 
 	// clean up chain
 	cluster_t temp = clst;
@@ -224,6 +229,7 @@ fat_remove_chain (cluster_t clst, cluster_t pclst) {
 void
 fat_put (cluster_t clst, cluster_t val) {
 	/* TODO: Your code goes here. */
+	ASSERT(clst != EOChain && clst);
 	lock_acquire(&fat_fs->write_lock);
 	fat_fs->fat[clst-1] = val;
 	lock_release(&fat_fs->write_lock);
@@ -233,7 +239,7 @@ fat_put (cluster_t clst, cluster_t val) {
 cluster_t
 fat_get (cluster_t clst) {
 	/* TODO: Your code goes here. */
-	ASSERT(clst != EOChain);
+	ASSERT(clst != EOChain && clst);
 	return fat_fs->fat[clst-1];
 }
 
@@ -241,7 +247,10 @@ fat_get (cluster_t clst) {
 disk_sector_t
 cluster_to_sector (cluster_t clst) {
 	/* TODO: Your code goes here. */
+	lock_acquire(&fat_fs->write_lock);
+	ASSERT(clst != EOChain && clst);
 	disk_sector_t out = fat_fs->data_start + (clst - 1) * SECTORS_PER_CLUSTER;
+	lock_release(&fat_fs->write_lock);
 	return out;
 }
 
@@ -251,6 +260,8 @@ sector_to_cluster (disk_sector_t sector) {
 	if (sector - fat_fs->data_start < 0)
 		return 0;
 
+	lock_acquire(&fat_fs->write_lock);
 	cluster_t out = (sector - fat_fs->data_start) / SECTORS_PER_CLUSTER + 1;
+	lock_release(&fat_fs->write_lock);
 	return out;
 }

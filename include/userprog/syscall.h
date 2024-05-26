@@ -10,5 +10,8 @@ extern void *stdout_ptr;
 extern void *stderr_ptr;
 
 #define MAX_FETY 126 // 126
+#define checkdir(ptr) ((uint64_t)(ptr) & 1)
+#define checklink(ptr) ((uint64_t)(ptr) & 2)
+#define getptr(ptr)	 ((uint64_t)(ptr) & ~1)
 
 #endif /* userprog/syscall.h */

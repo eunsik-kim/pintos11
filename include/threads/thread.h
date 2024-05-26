@@ -145,7 +145,9 @@ struct thread
 	uint64_t stack_bottom;
 	uint64_t last_rsp;
 #endif
-
+#ifdef EFILESYS
+	struct dir *cwd;
+#endif
 	/* Owned by thread.c. */
 	struct intr_frame tf; /* Information for switching */
 	/* Alarm Clock */

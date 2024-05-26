@@ -6,6 +6,8 @@
 #include "filesys/filesys.h"
 #include "filesys/free-map.h"
 #include "threads/malloc.h"
+#include "filesys/fat.h"
+#include "userprog/syscall.h"
 
 /* Identifies an inode. */
 #define INODE_MAGIC 0x494e4f44
@@ -55,6 +57,7 @@ inode_open (disk_sector_t sector) {
 	inode->sector = sector;
 	inode->open_cnt = 1;
 	inode->deny_write_cnt = 0;
+	inode->cwd_cnt = 0;
 	inode->removed = false;
 	disk_read (filesys_disk, inode->sector, &inode->data);
 	return inode;
@@ -104,7 +107,10 @@ inode_allow_write (struct inode *inode) {
 /* Returns the length, in bytes, of INODE's data. */
 off_t
 inode_length (const struct inode *inode) {
-	return inode->data.length;
+	symlink_change_file(inode);
+	off_t len = inode->data.length;
+	file_change_symlink(inode);
+	return len;
 }
 
 #ifndef EFILESYS
@@ -302,7 +308,7 @@ inode_write_at (struct inode *inode, const void *buffer_, off_t size,
 static disk_sector_t
 byte_to_sector (const struct inode *inode, off_t pos) {
 	ASSERT (inode != NULL);
-	if (pos >= inode->data.length)
+	if (pos > inode->data.length)
 		return -1;
 
 	cluster_t clst;
@@ -332,8 +338,9 @@ inode_close (struct inode *inode) {
 		/* Remove from inode list and release lock. */
 		list_remove (&inode->elem);
 
-		/* Deallocate blocks if removed. */
-		if (inode->removed) 
+		/* Deallocate blocks if removed. 
+			only target file can delete disk */
+		if (inode->removed && (inode->sector == inode->data.target_sector)) 
 			fat_remove_chain(sector_to_cluster(inode->sector), 0);
 		free (inode); 
 	}
@@ -367,14 +374,18 @@ inode_create (disk_sector_t sector, off_t length) {
 			clst = fat_create_chain(clst);
 
 		if (create_cnt > 0 || !clst) {	// if fail to create chain
-			fat_remove_chain(sector, 0);
+			fat_remove_chain(s_clst, 0);
 			return false;
 		}
 
 		// write inode struct on disk
 		success = true; 
-		disk_inode->start = cluster_to_sector(fat_get(s_clst));
+		if (fat_get(s_clst) != EOChain)
+			disk_inode->start = cluster_to_sector(fat_get(s_clst));
+		else	 // if length == 0
+			disk_inode->start = sector;
 		disk_inode->length = length;
+		disk_inode->target_sector = sector;
 		disk_inode->magic = INODE_MAGIC;
 		disk_write (filesys_disk, sector, disk_inode);
 		
@@ -390,10 +401,12 @@ inode_create (disk_sector_t sector, off_t length) {
 /* file read with fat */
 off_t
 inode_read_at (struct inode *inode, void *buffer_, off_t size, off_t offset) {
-	uint8_t *buffer = buffer_;
+	symlink_change_file(inode);
+
+	cluster_t clst;
 	off_t bytes_read = 0;
 	uint8_t *bounce = NULL;
-	cluster_t clst;
+	uint8_t *buffer = buffer_;
 	disk_sector_t sector_idx = byte_to_sector (inode, offset);
 	while (size > 0) {
 		/* Disk sector to read, starting byte offset within sector. */
@@ -436,7 +449,7 @@ inode_read_at (struct inode *inode, void *buffer_, off_t size, off_t offset) {
 		sector_idx = cluster_to_sector(clst);
 	}
 	free (bounce);
-
+	file_change_symlink(inode);
 	return bytes_read;
 }
 
@@ -446,53 +459,71 @@ inode_read_at (struct inode *inode, void *buffer_, off_t size, off_t offset) {
  * (Normally a write at end of file would extend the inode, but
  * growth is not yet implemented.) */
 off_t
-inode_write_at (struct inode *inode, const void *buffer_, off_t size,
-		off_t offset) {
-	const uint8_t *buffer = buffer_;
-	off_t bytes_written = 0;
-	uint8_t *bounce = NULL;
+inode_write_at (struct inode *inode, const void *buffer_, off_t size, off_t offset) {
+	symlink_change_file(inode);
+
 	if (inode->deny_write_cnt)
 		return 0;
 
-	cluster_t clst, last_clst;
-	disk_sector_t sector, sector_idx, off_sector;
-	off_t res = inode->data.length % DISK_SECTOR_SIZE;
-	off_t add_length = offset + size - inode->data.length;
+	uint8_t *bounce = NULL;
+	const uint8_t *buffer = buffer_;
+	disk_sector_t sector, sector_idx;
+	cluster_t clst, last_clst, off_clst;
+	off_t create_cnt, add_length = offset + size - inode->data.length;
+	off_t add, bytes_written = 0, res = inode->data.length % DISK_SECTOR_SIZE;
+	add = (res) ? 1 : 0;
 
-	// file growth
-	if ((add_length + res) / DISK_SECTOR_SIZE > 0) {
-		clst = last_clst = sector_to_cluster(byte_to_sector(inode, inode->data.length));
-		int create_cnt = bytes_to_sectors(add_length + res);		
-
+	// file growth case 1: no sector to write, case 2: not enough place to write
+	if ((inode->data.length == 0) || (add_length + res - add) / DISK_SECTOR_SIZE > 0) {
+		if (inode->data.length == 0) {	// case 1
+			clst = last_clst = sector_to_cluster(inode->data.start);	
+			create_cnt = bytes_to_sectors(add_length + res);		
+		} else {	// case 2
+			clst = last_clst = sector_to_cluster(byte_to_sector(inode, inode->data.length));
+			create_cnt = (add_length + res - add) / DISK_SECTOR_SIZE;		
+		}
+		
 		// append cluster chain 
 		while (clst && create_cnt--) 
 			clst = fat_create_chain(clst);
 		
 		if (create_cnt > 0 || !clst) {
-			fat_remove_chain(fat_get(last_clst), last_clst);
+			if (inode->data.length != 0)	// case 2
+				fat_remove_chain(fat_get(last_clst), last_clst);
+			else if (fat_get(last_clst) != EOChain)	// case 1, only created chain  
+				fat_remove_chain(fat_get(last_clst), last_clst);
 			return false;
 		}
 
+		// case 1, reset start sector 
+		if (inode->data.length == 0)
+			inode->data.start = cluster_to_sector(fat_get(last_clst));
+
 		// update inode struct on disk
 		inode->data.length += add_length;
-		disk_write (filesys_disk, inode->sector, &inode->data);
+		disk_write (filesys_disk, inode->data.target_sector, &inode->data);
+		sector_idx = byte_to_sector(inode, offset);	
 
-		// memset 0 until offset_sector from last_clst on disk
+		// memset 0 until offset_sector from last_clst behind on disk
 		static char zeros[DISK_SECTOR_SIZE];
-		last_clst = fat_get(last_clst);
-		do {
-			sector = cluster_to_sector(last_clst);
-			disk_write (filesys_disk, sector, zeros);
-			last_clst = fat_get(last_clst);
-		} while (sector != off_sector);
+		off_clst = sector_to_cluster(sector_idx);
+		clst = last_clst;
+		while (clst != off_clst) {
+			clst = fat_get(clst);
+			disk_write (filesys_disk, cluster_to_sector(clst), zeros);	
+		}
+		if (last_clst != off_clst)	// careful not to overlap last sector
+			disk_write (filesys_disk, cluster_to_sector(off_clst), zeros);	
 		
-	} else if (add_length > 0) {
-		// update inode struct on disk (not append sector)
-		inode->data.length += add_length;
-		disk_write (filesys_disk, inode->sector, &inode->data);
+	} else {
+		if (add_length > 0) {
+			// update inode struct on disk (not append sector)
+			inode->data.length += add_length;
+			disk_write (filesys_disk, inode->data.target_sector, &inode->data);
+		}
+		sector_idx = byte_to_sector(inode, offset);
 	}
-	sector_idx = off_sector = byte_to_sector(inode, offset);
-
+	
 	while (size > 0) {
 		/* Sector to write, starting byte offset within sector. */
 		int sector_ofs = offset % DISK_SECTOR_SIZE;
@@ -541,7 +572,45 @@ inode_write_at (struct inode *inode, const void *buffer_, off_t size,
 		sector_idx = cluster_to_sector(clst);
 	}
 	free (bounce);
-
+	file_change_symlink(inode);
 	return bytes_written;
+}
+
+/* read나 write하기전 target file로 변--신 */
+void symlink_change_file(struct inode* inode) {
+	if (!checklink(inode->data.isdir))
+		return;
+	
+	char target[512];
+	disk_sector_t sector = inode->data.start;
+	
+	/* chaining until finding target file */
+	while (sector) {
+		disk_read(filesys_disk, sector, target);
+		void *file_entity = filesys_open(target);
+		if (!file_entity)
+			PANIC("No such file or directory");
+		struct file *file = getptr(file_entity);
+
+		if (checklink(file->inode->data.isdir))
+			sector = file->inode->data.start;
+		else {
+			sector = 0;
+			memcpy(&inode->data, &file->inode->data, sizeof(struct inode_disk)); 
+		}
+
+		if (checkdir(file_entity)) 
+			dir_close(getptr(file_entity));
+		else
+			file_close(file);
+	}
+}
+
+/* read나 write한뒤 원래 link file로 변--신 */
+void file_change_symlink(struct inode* inode) {
+	if (inode->sector == inode->data.target_sector)
+		return;
+	
+	disk_read (filesys_disk, inode->sector, &inode->data);
 }
 #endif

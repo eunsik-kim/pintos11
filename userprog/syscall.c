@@ -17,6 +17,8 @@
 #include "threads/palloc.h"
 #include "userprog/process.h"
 #include "vm/vm.h"
+#include "filesys/directory.h"
+#include "filesys/fat.h"
 
 /* System call.
  *
@@ -32,7 +34,6 @@
 #define MSR_SYSCALL_MASK 0xc0000084 /* Mask for the eflags */
 #define MAX_STDOUT (1 << 9)
 #define MAX_FD (1 << 9)			/* PGSIZE / sizeof(struct file) */
-
 
 struct func_params
 {	
@@ -155,6 +156,24 @@ void syscall_handler(struct intr_frame *f)
 			break;
 		case SYS_MUNMAP:
 			munmap(f->R.rdi);
+			break;
+		case SYS_CHDIR:
+			f->R.rax = chdir(f->R.rdi);
+			break;
+		case SYS_MKDIR:
+			f->R.rax = mkdir(f->R.rdi);
+			break;
+		case SYS_READDIR:
+			f->R.rax = readdir(f->R.rdi, f->R.rsi);
+			break;
+		case SYS_ISDIR:
+			f->R.rax = isdir(f->R.rdi);
+			break;
+		case SYS_INUMBER:
+			f->R.rax = inumber(f->R.rdi);
+			break;
+		case SYS_SYMLINK:
+			f->R.rax = symlink(f->R.rdi, f->R.rsi);
 			break;
 		case SYS_DUP2:
 			f->R.rax = dup2(f->R.rdi, f->R.rsi);
@@ -317,7 +336,7 @@ bool open_fdt_in_page(struct func_params *params, struct thread *t)
 
 /* 
  * fdt_list를 순회하면서 file과 file_entry, fdt 삭제 시도 후 성공여부 return 
- * 입력시 params에 fd+1, 출력시 find_page, offset 저장
+ * 입력시 params에 fd+1, 출력시 find_page, offset 저장 (페이지 삭제는 미구현)
  */
 bool delete_fety_fdt_in_page(struct func_params *params, struct thread *t){
 	struct fdt *new_fdt;
@@ -335,7 +354,11 @@ bool delete_fety_fdt_in_page(struct func_params *params, struct thread *t){
 				// no reference to fety, then delete fety
 				if (--new_fety->refc == 0){	
 					if (is_user_vaddr(new_fety->file)) continue;
-					file_close(new_fety->file);
+					if (checkdir(new_fety->file)) {
+						cwd_cnt_down(getptr(new_fety->file));
+						dir_close(getptr(new_fety->file));
+					} else
+						file_close(new_fety->file);
 					new_fety->file = NULL;
 					fet_table = pg_round_down(new_fety);
 					update_offset(fet_table, i, CLOSE);
@@ -424,7 +447,7 @@ int wait(pid_t pid)
 
 /* initial_size의 file을 생성 후 성공여부 return, 이미 존재하거나 메모리 부족 시 fail */
 bool create(const char *file, unsigned initial_size)
-{
+{	
 	check_address(file);
 	lock_acquire(&filesys_lock);
 	bool flag = filesys_create(file, initial_size);
@@ -432,7 +455,9 @@ bool create(const char *file, unsigned initial_size)
 	return flag;
 }
 
-/* file을 삭제 후 성공여부 return, file이 없거나 inode 생성에 실패시 fail */
+/* file을 삭제 후 성공여부 return, file이 없거나 inode 생성에 실패시 fail 
+ dirtory가 비어 있지 않으면 삭제 실패, root directory인경우 삭제 실패,
+ 현재 process나 다른 process의 cwd는 삭제 불가능 */
 bool remove(const char *file)
 {
 	check_address(file);
@@ -446,6 +471,7 @@ bool remove(const char *file)
  * 잘못된 파일 이름을 가지거나 disk에 파일이 없는 경우 -1 반환.
  * file_entry를 fet_list에서 없는 경우 (메모리 부족한 경우 page 추가 하여) fety 생성.
  * thread 내에 file_entry와 fdt를 만들어 fd 값을 저장한 뒤, fd 값을 반환.
+ * directory도 열 수 있음
  */
 int open(const char *file)
 {
@@ -455,6 +481,9 @@ int open(const char *file)
 	lock_release(&filesys_lock);
 	if (file_entity == NULL) 	// wrong file name or oom or not in disk (initialized from arg -p)
 		return -1;
+	
+	if (checkdir(file_entity))
+		cwd_cnt_up(getptr(file_entity));
 
 	// find file_entry
 	struct func_params params;
@@ -475,14 +504,15 @@ int filesize(int fd)
 	if (!find_file_in_page(&params, &thread_current()->fdt_list))
 		return -1;
 
-	struct file *cur_file = params.file;
+	struct file *cur_file = getptr(params.file);
 	if (is_user_vaddr(cur_file)) 
 		return -1;
 
 	return file_length(cur_file);
 }
 
-/* fd값에 따라 읽은 만큼 byte(<=length)값 반환, 못 읽는 경우 -1, 읽을 지점이 파일의 끝인경우 0 반환 */
+/* fd값에 따라 읽은 만큼 byte(<=length)값 반환, 못 읽는 경우 -1, 읽을 지점이 파일의 끝인경우 0 반환 
+ dir를 읽으려고 하는경우 -1 return */
 int read(int fd, void *buffer, unsigned size)
 {
 	struct func_params params;
@@ -496,6 +526,9 @@ int read(int fd, void *buffer, unsigned size)
 
 	if (size == 0) // not read
 		return 0; 
+
+	if (checkdir(cur_file)) 	// cannot read dir
+		return -1;
 
 	check_address(buffer);
 	write_to_read_page(buffer);	
@@ -519,7 +552,7 @@ int read(int fd, void *buffer, unsigned size)
 	return bytes_read;
 }
 
-/* fd값에 따라 적은 만큼 byte(<=length)값 반환, 못 적는 경우 -1 반환 */
+/* fd값에 따라 적은 만큼 byte(<=length)값 반환, 못 적는 경우 -1 반환, dir를 쓰려고 하는경우 -1 return */
 int write(int fd, const void *buffer, unsigned size)
 {
 	struct func_params params;
@@ -531,6 +564,9 @@ int write(int fd, const void *buffer, unsigned size)
 	if (cur_file == NULL || cur_file == stdin_ptr)  // no bytes could be written at all
 		return 0;
 	
+	if (checkdir(cur_file)) 	// cannot write dir
+		return -1;
+
 	check_address(buffer);
 	int bytes_write = size;
 	if (cur_file == stdout_ptr) // stdout: lock을 걸고 buffer 전체를 입력
@@ -566,7 +602,7 @@ void seek(int fd, unsigned position)
 	if (!find_file_in_page(&params, &thread_current()->fdt_list))
 		return -1;
 
-	struct file *cur_file = params.file;
+	struct file *cur_file = getptr(params.file);
 	if (is_user_vaddr(cur_file)) return;
 	file_seek(cur_file, position);
 }
@@ -579,7 +615,7 @@ unsigned tell(int fd)
 	if (!find_file_in_page(&params, &thread_current()->fdt_list))
 		return -1;
 
-	struct file *cur_file = params.file;
+	struct file *cur_file = getptr(params.file);
 	if (is_user_vaddr(cur_file)) 
 		return -1;
 
@@ -671,9 +707,145 @@ void munmap(void *addr)
 	}
 }
 
-bool chdir (const char *dir);
-bool mkdir (const char *dir);
-bool readdir (int fd, char name[READDIR_MAX_LEN + 1]);
-bool isdir (int fd);
-int inumber (int fd);
-int symlink (const char* target, const char* linkpath);
+/* directory path가 유효한지 검증하며 cwd를 변경 */
+bool chdir (const char *dir) {
+	struct thread* cur = thread_current();
+	char *file_name = malloc(NAME_MAX + 1);
+	if (!file_name)
+		return NULL;
+		
+	struct dir *tar_dir;
+	struct inode *inode = NULL;
+	if (!(tar_dir = find_dir(dir, file_name))){	// find dir last before 
+		free(file_name);
+		return false;
+	}
+	
+	if (!dir_lookup(tar_dir, file_name, &inode)) {	// open last dir inode
+		dir_close(tar_dir);
+		free(file_name);
+		return false;
+	}
+	dir_close(tar_dir);
+	free(file_name);
+
+	if (!inode->data.isdir)	// wrong path
+		return false;
+
+	if (!(tar_dir = dir_open(inode))) 
+		return false;
+	
+	cwd_cnt_down(cur->cwd);
+	dir_close(cur->cwd);
+	cur->cwd = tar_dir;
+	cwd_cnt_up(tar_dir);
+	return true;
+}
+
+/* directory 생성, directory 존재 유무와 생성 성공유무에 따라서 return */
+bool mkdir (const char *dir) {
+	char *file_name = malloc(NAME_MAX + 1);
+	if (!file_name)
+		return false;
+
+	struct dir *tar_dir;
+	struct inode *inode = NULL;
+	if (!(tar_dir = find_dir(dir, file_name))){ // find dir before last 
+		free(file_name);
+		return false;
+	}		
+	
+	// make space to place new directory
+	cluster_t clst;
+	if (!(clst = fat_create_chain(0))) {
+		free(file_name);
+		return false;
+	}
+	disk_sector_t inode_sector = cluster_to_sector(clst);
+
+	// create directory 	
+	if (!dir_create(inode_sector, 16, dir_get_inode(tar_dir)->sector)) {
+		dir_close(tar_dir);
+		free(file_name);
+		return false;
+	}
+
+	if(!dir_add(tar_dir, file_name, inode_sector)) {	// include checking same file_name
+		dir_remove(tar_dir, file_name);
+		dir_close(tar_dir);
+		free(file_name);
+		return false;
+	}
+	free(file_name);
+	dir_close(tar_dir);
+	return true;
+}
+
+/* directory에서 entry를 읽음, 성공하면 name에 잘 저장
+ .과 ..은 반환 안되고, null로 끝나게 해야됨, 
+ 변경이 안된다면 한번씩 읽도록 작성(동기화 x) */
+bool readdir (int fd, char name[READDIR_MAX_LEN + 1]) {
+	struct func_params params;
+	params.fd = fd + 1;
+	if (!find_file_in_page(&params, &thread_current()->fdt_list))
+		return false;
+
+	if (is_user_vaddr(params.file)) 
+		return false;
+	
+	struct dir *dir = getptr(params.file); 
+	return dir_readdir(dir, name);
+}
+
+/* fd가 dir인지 check해서 return */
+bool isdir (int fd) {
+	struct func_params params;
+	params.fd = fd + 1;
+	if (!find_file_in_page(&params, &thread_current()->fdt_list))
+		return false;
+
+	if (is_user_vaddr(params.file)) 
+		return false;
+	
+	return checkdir(params.file);
+}
+
+/* inode num을 return 해야되는데 그냥 귀찮으니깐 inode의 sector num return */
+int inumber (int fd) {
+	struct func_params params;
+	params.fd = fd + 1;
+	if (!find_file_in_page(&params, &thread_current()->fdt_list))
+		return -1;
+
+	if (is_user_vaddr(params.file)) 
+		return -1;
+	
+	struct file *cur_file = getptr(params.file);  // include directory
+	return cur_file->inode->sector;
+}
+
+/* linkpath를 통해 target으로 이어지는 symbolic link 파일 만들기
+ target의 inode 정보를 기록하여 read나 write때 load하여 사용
+ 성공하면 0, 실패하면 -1 return */
+int symlink (const char* target, const char* linkpath) {
+
+	// find the cluster to place sybolic file
+	if (!create(linkpath, DISK_SECTOR_SIZE))
+		return -1;
+
+	lock_acquire(&filesys_lock);
+	struct file *file_entity = filesys_open(linkpath);
+	lock_release(&filesys_lock);
+	struct inode_disk *disk_inode = &file_entity->inode->data;
+
+	// init symlink 
+	disk_inode->isdir = 2;	// link flg
+	disk_write(filesys_disk, file_entity->inode->sector, disk_inode);
+
+	// record file name
+	char buf[512];
+	strlcpy(buf, target, sizeof(target) + 1);
+	disk_write(filesys_disk, disk_inode->start, buf);
+	file_close(file_entity);
+	return 0;
+}

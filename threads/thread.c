@@ -16,6 +16,7 @@
 #include "userprog/syscall.h"
 #include "filesys/file.h"
 #endif
+#include "filesys/directory.h"
 
 /* Random value for struct thread's `magic' member.
    Used to detect stack overflow.  See the big comment at the top
@@ -266,6 +267,11 @@ tid_t thread_create(const char *name, int priority,
 	t->tf.ss = SEL_KDSEG;
 	t->tf.cs = SEL_KCSEG;
 	t->tf.eflags = FLAG_IF;
+	/* filesys */
+	if (strcmp(t->name, "idle")) {
+		t->cwd = dir_open_root();
+		cwd_cnt_up(t->cwd);
+	}
 
 	if (thread_mlfqs)
 	{
@@ -612,7 +618,7 @@ init_thread(struct thread *t, const char *name, int priority)
 	if (thread_mlfqs)
 		list_push_back(&thread_list, &t->thread_elem);
 	t->magic = THREAD_MAGIC;
-
+	
 	/* priority scheduling */
 	t->init_priority = priority;
 	t->wait_on_lock = NULL;
@@ -621,7 +627,9 @@ init_thread(struct thread *t, const char *name, int priority)
 	/* advanced scheduler */ 
 	t->nice = 0;					
 	t->recent_cpu = 0;
-	
+	/* filesys */
+	t->cwd = NULL;
+	t->cwd = 0;
 }
 
 /* Chooses and returns the next thread to be scheduled.  Should
