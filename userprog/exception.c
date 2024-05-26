@@ -7,6 +7,8 @@
 #include "intrinsic.h"
 #include "userprog/syscall.h"
 
+int total_pf;
+
 /* Number of page faults processed. */
 static long long page_fault_cnt;
 
@@ -145,6 +147,7 @@ page_fault (struct intr_frame *f) {
 	/* For project 3 and later. */
 	// bool fault_handle_succ = vm_try_handle_fault (f, fault_addr, user, write, not_present);
 	// if (fault_handle_succ)
+	total_pf++;
     if (vm_try_handle_fault (f, fault_addr, user, write, not_present))
 		return;
 #endif	

@@ -8,9 +8,11 @@
 #include "threads/vaddr.h"
 #include "lib/debug.h"
 #include "include/threads/pte.h"
+#include "include/userprog/process.h"
 
 // #include "lib/kernel/bitmap.c"
 static struct frame_table frame_table;
+static struct lock cp_lock;
 
 /* Initializes the virtual memory subsystem by invoking each subsystem's
  * intialize codes. */
@@ -25,7 +27,7 @@ vm_init (void) {
 	/* DO NOT MODIFY UPPER LINES. */
 	/* TODO: Your code goes here. */
 	frame_table_init(); /* Initialize Frame Table */
-
+	lock_init(&cp_lock);
 }
 
 /* Get the type of the page. This function is useful if you want to know the
@@ -36,7 +38,7 @@ page_get_type (struct page *page) {
 	int ty = VM_TYPE (page->operations->type);
 	switch (ty) {
 		case VM_UNINIT:
-			return VM_TYPE (page->uninit.type);
+			return VM_TYPE (page->type);
 		default:
 			return ty;
 	}
@@ -53,10 +55,12 @@ static struct frame *vm_evict_frame (void);
 bool
 vm_alloc_page_with_initializer (enum vm_type type, void *upage, bool writable,
 		vm_initializer *init, void *aux) {
+		
+	printf("***page type passed in: %d\n",type);
 
 	ASSERT (VM_TYPE(type) != VM_UNINIT)
-
-	struct supplemental_page_table *spt = &thread_current ()->spt;
+	struct thread *cur = thread_current();
+	struct supplemental_page_table *spt = &cur->spt;
 
 	/* Check wheter the upage is already occupied or not. */
 	struct page *page = spt_find_page (spt, upage);
@@ -70,22 +74,26 @@ vm_alloc_page_with_initializer (enum vm_type type, void *upage, bool writable,
 			return false;
 
 		bool(*initializer)(struct page* page, enum vm_type type, void*); //set initializer
-		switch (VM_TYPE(type)) // get VM_TYPE between uninit/anon/file
-		{
-			case VM_ANON:
-				initializer = anon_initializer;
-				break;
-			case VM_FILE:
-				initializer = file_backed_initializer;
-				break;
-			default:
-				return false;
+		
+		if (type & VM_ANON)
+			initializer = anon_initializer;
+		else if (type & VM_FILE)
+			initializer = file_backed_initializer;
+		else
+			PANIC("Initializer not implemented");
+
+		if ((type & VM_FILE) && !(type & VM_MMAP) && writable) { // bss segment
+			initializer = anon_initializer;	
+			type &= ~VM_FILE;
+			type |= VM_ANON | VM_BSS;
 		}
-
-		if (writable)
-			type = type | VM_WRITABLE;
-
+		
+		type = (writable & 1) ? type | VM_WRITABLE : type;
+		type = (type & VM_STACK) ? type |= VM_DIRTY : type;
+		printf("---page type before uninit_new: %d\n", type);
 		uninit_new(page, pg_round_down(upage), init, type, aux, initializer);
+		circular_list_init(&page->cp_elem);
+		page->pml4 = cur->pml4;
 
 		/* TODO: Insert the page into the spt. */
 		return spt_insert_page(spt, page);
@@ -101,9 +109,9 @@ spt_find_page (struct supplemental_page_table *spt UNUSED, void *va UNUSED) {
 	struct page search_page, *found_page;
 	search_page.va = pg_round_down(va);
 	
-	lock_acquire(&spt->hash_lock);
+	// lock_acquire(&spt->hash_lock);
 	struct hash_elem *spt_e = hash_find(&spt->spt_page_hash, &search_page.hash_elem);
-	lock_release(&spt->hash_lock);
+	// lock_release(&spt->hash_lock);
 	if (spt_e){
 		found_page = hash_entry(spt_e, struct page, hash_elem);
 		return found_page;
@@ -116,18 +124,18 @@ spt_find_page (struct supplemental_page_table *spt UNUSED, void *va UNUSED) {
 bool
 spt_insert_page (struct supplemental_page_table *spt UNUSED,
 		struct page *page UNUSED) {
-	lock_acquire(&spt->hash_lock);
+	// lock_acquire(&spt->hash_lock);
 	bool succ = (hash_insert(&spt->spt_page_hash, &page->hash_elem)==NULL)? true:false;
-	lock_release(&spt->hash_lock);
+	// lock_release(&spt->hash_lock);
 	return succ;
 }
 
 void
 spt_remove_page (struct supplemental_page_table *spt, struct page *page) {
 	vm_dealloc_page (page);
-	lock_acquire(&spt->hash_lock);
+	// lock_acquire(&spt->hash_lock);
 	bool succ = (hash_delete(&spt->spt_page_hash, &page->hash_elem)==NULL)? true:false;
-	lock_release(&spt->hash_lock);
+	// lock_release(&spt->hash_lock);
 	return succ;
 }
 
@@ -194,10 +202,31 @@ vm_stack_growth (void *addr UNUSED) {
 /* Handle the fault on write_protected page */
 static bool
 vm_handle_wp (struct page *page UNUSED) {
-
+	struct thread *cur = thread_current();
+	if(!(page->type & (VM_COW || VM_WRITABLE)))
+		return false;
+	page->type &= ~VM_COW;
+	page->type |= VM_DIRTY;
+	lock_acquire(&cp_lock);
+	// Copy On Write
+	if (is_alone(&page->cp_elem)){ //use frame alone
+		lock_release(&cp_lock);
+		if (!pml4_set_page(cur->pml4, page->va, page->frame->kva, 1))
+			return false;
+		return true;
+	}
+	list_remove(&page->cp_elem); //delete reference
+	struct frame *new_frame = vm_get_frame();
+	lock_release(&cp_lock);
+	memcpy(new_frame->kva, page->frame->kva, PGSIZE);
+	page->frame = new_frame;
+	new_frame->page = page;
+	if (!pml4_set_page(cur->pml4, page->va, new_frame->kva, 1))
+		return false;
+	
+	return false;
 
 }
-
 
 
 
@@ -211,12 +240,12 @@ vm_try_handle_fault (struct intr_frame *f UNUSED, void *addr UNUSED,
 	struct thread *cur = thread_current();
 	struct supplemental_page_table *spt = &cur->spt;
 	struct page *page = NULL;
-	/* Check Validity
-	/* user -> kernel request or va does not exist */
-	if (user && is_kernel_vaddr(addr) | addr==NULL)
+	/* Check Validity */
+	if (is_kernel_vaddr(addr) | addr==NULL)
 		return false; 
 
-	void* rsp = cur->rsp;
+	/* if fault occurs in syscall */
+	uint64_t rsp = cur->rsp;
 	if (!rsp){
 		rsp = f->rsp;
 	} else {
@@ -281,9 +310,6 @@ vm_do_claim_page (struct page *page) {
 	/* Set page types */
 	bool writable = (page->type & VM_WRITABLE);
 
-	
-
-
 	/* TODO: Insert page table entry to map page's VA to frame's PA. */
 	if(pml4_set_page(thread_current()->pml4, page->va, frame->kva, writable)){
 		/// Add swap_in type for file backed memory
@@ -299,7 +325,7 @@ supplemental_page_table_init (struct supplemental_page_table *spt) {
 	// spt->hash_lock = (struct lock*)malloc(sizeof(struct lock));
     // spt->spt_page_hash = (struct hash*)malloc(sizeof(struct hash));
 	hash_init(&spt->spt_page_hash, page_hash, page_less, NULL);
-	lock_init(&spt->hash_lock);
+	// lock_init(&spt->hash_lock);
 }
 
 /* Copy supplemental page table from src to dst */
@@ -307,23 +333,9 @@ bool
 supplemental_page_table_copy (struct supplemental_page_table *dst UNUSED,
 		struct supplemental_page_table *src UNUSED) {
 	// src to dst. called after initialization of dst
-	lock_acquire(&src->hash_lock);
-
-	// initialize dst spt
-	// hash_init(&dst->spt_page_hash, page_hash, page_less, NULL);
-	// lock_init(&dst->hash_lock);0
-	// lock_acquire(&dst->hash_lock);
-	lock_acquire(&dst->hash_lock);
-
-	// copy src hash elem to dst
-
-	// hash_apply(dst, hash_copy);
-
-	lock_release(&src->hash_lock);
-	lock_release(&dst->hash_lock);
-
-		// apply copy machanism
-
+	// lock_acquire(&src->hash_lock);
+	return hash_apply(&src->spt_page_hash, hash_copy_action);
+	// lock_release(&src->hash_lock);
 }
 
 /* Free the resource hold by the supplemental page table
@@ -332,11 +344,9 @@ supplemental_page_table_copy (struct supplemental_page_table *dst UNUSED,
 void
 supplemental_page_table_kill (struct supplemental_page_table *spt UNUSED) {
 	/* TODO: Destroy all the supplemental_page_table hold by thread */
-	if (hash_size(&spt->spt_page_hash)){
-		lock_acquire(&spt->hash_lock);
-		hash_clear(&spt->spt_page_hash, hash_free_page); //free hash elements
-		lock_release(&spt->hash_lock);
-	}	
+		// lock_acquire(&spt->hash_lock);
+		hash_destroy(&spt->spt_page_hash, hash_free_page);
+		// lock_release(&spt->hash_lock);
 	/* TODO: writeback all the modified contents to the storage. */
 	// applied to file backed files?
 }
@@ -385,8 +395,14 @@ page_less (const struct hash_elem *a_,
 void 
 hash_free_page(struct hash_elem *e, void *aux UNUSED)
 {
-	struct page *p = hash_entry(e, struct page, hash_elem);
-	vm_dealloc_page(p);
+	struct page *free_page = hash_entry(e, struct page, hash_elem);
+	if (aux && (free_page->type & VM_MMAP)){
+		struct list *inherit_list = aux;
+		pml4_clear_page(free_page->pml4, free_page->va);
+		list_push_back(inherit_list, &free_page->hash_elem.list_elem);
+		return;
+	}
+	vm_dealloc_page(free_page);
 }
 
 bool
@@ -395,47 +411,116 @@ hash_copy_action(struct hash_elem *e, void *aux UNUSED)
 	struct lazy_load_segment_aux *cp_aux;
 	struct thread *cur = thread_current();
 	struct page *src_page = hash_entry(e, struct page, hash_elem);
-	struct page *dst_page = (struct page*)calloc(1, sizeof(struct page));
+	struct page *dst_page = (struct page*)malloc(sizeof(struct page));
 
-	// copy
+	// copy and init page
 	memcpy(dst_page, src_page, sizeof(struct page));
-	// circular list init
+	circular_list_init(&dst_page->cp_elem);
 	dst_page->pml4 = cur->pml4;
 
 	enum vm_type type = VM_TYPE(src_page->type);
 	enum vm_type uninit_type = src_page->operations->type; //초기화 하기 전이면 위의 type이랑 operations type이 다를듯
 
-	if ((uninit_type == VM_UNINIT) || (type & VM_FILE))
+	if (uninit_type == VM_UNINIT)
 	{
-		;
+		if (!(cp_aux = (struct lazy_load_segment_aux *)malloc(sizeof(struct lazy_load_segment_aux))))
+			return false;
+		
+		memcpy(cp_aux, src_page->uninit.aux, sizeof(struct lazy_load_segment_aux));
+		dst_page->uninit.aux = cp_aux;
+		goto end;
+
+	} else if (type & VM_FILE){
+		if (!(cp_aux = (struct lazy_load_segment_aux *)malloc(sizeof(struct lazy_load_segment_aux))));
+			return false;
+		
+		memcpy(cp_aux, src_page->file.aux, sizeof(struct lazy_load_segment_aux));
+		dst_page->file.aux = cp_aux;
 	}
 
 	switch (VM_TYPE(src_page->type))
 	{
-	case (VM_FRAME| VM_FILE ):
-		break;
-	
-	default:
-		break;
+		case(VM_FRAME | VM_FILE):
+		case(VM_FRAME | VM_ANON):
+			// for COW, make page unwritable
+			if (src_page->type & VM_WRITABLE)
+				ASSERT(pml4_set_page(src_page->pml4, src_page->va, src_page->frame->kva, 0));
+			if (!pml4_set_page(cur->pml4, dst_page->va, dst_page->frame->kva, 0))
+				return false;
+			
+			enum vm_type type = VM_COW;
+			if (pml4_is_dirty(src_page->pml4, src_page->va))
+				type |= VM_DIRTY;
+			dst_page->type |= type;
+			src_page->type |= type;
+
+		case VM_ANON: //swap
+		case VM_FILE: //disk
+			//make a linked list of cp_elem to find child process
+			list_insert(&src_page->cp_elem, &dst_page->cp_elem);
+			goto end;
+		default:
+			PANIC("wrong access");
 	}
-	
 
+end:
+	return spt_insert_page(&cur->spt, dst_page);
 }
-
 
 
 /* page & frame 삭제 */
-bool frame_delete(struct page *delete_page){ 
-	struct thread *cur = thread_current();
+bool frame_delete(struct page *delete_page)
+{
+	struct hash_elem *e;
 	if (delete_page->frame){ //if frame exists
-		// ASSERT(delete_page->frame->unwritable>=0);
-		if (!delete_page->frame->unwritable){
-			hash_delete(&frame_table, &delete_page->frame->hash_elem);
+		delete_page->type &= ~VM_FRAME;
+		if (is_alone(&delete_page->cp_elem)){
+			if(!(e=hash_delete(&frame_table, &delete_page->frame->hash_elem)))
+				return false;
 			free(delete_page->frame);
-		} else{
-			delete_page->frame->unwritable--;
-			pml4_clear_page(cur->pml4, delete_page->va);
+			delete_page->frame = NULL;
+			return true;
+		} else {
+			delete_page->frame = NULL;
+			pml4_clear_page(delete_page->pml4, delete_page->va);
 		}
 	}
-
+	return false;
 }
+
+void disable_shared_frame(struct page *page)
+{
+	ASSERT(page->frame);
+
+	page->frame = NULL;
+	page->type &= ~VM_FRAME;
+	pml4_clear_page(page->pml4, page->va);
+	
+}
+
+void enable_shared_frame(struct page *page, struct frame *frame)
+{
+	ASSERT(!page->frame);
+	ASSERT(page->type & VM_COW);
+
+	page->type |= VM_FRAME;
+	page->frame = frame;
+	pml4_set_page(page->pml4, frame->page->va, frame->kva, 0);
+}
+
+
+static struct frame *find_shared_frame(struct page *page)
+{
+	if (page->type & VM_WRITABLE)
+		return NULL;
+	
+	struct lazy_load_segment_aux *aux = page->uninit.aux;
+	struct frame *frame;
+
+	if (!pml4_set_page(thread_current()->pml4, page->va, frame->kva, 0))
+		return NULL;
+	page->type |= VM_COW;
+	page->uninit.init = NULL;
+	return frame;
+}
+

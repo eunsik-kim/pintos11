@@ -9,7 +9,7 @@
 struct frame_table {
 	
 	struct hash ft_frame_hash;	// frame table
-	struct list ft_list; //
+	// struct list ft_list; //
 	struct lock frame_lock; 		//frame_table lock
 
 };
@@ -18,26 +18,27 @@ enum vm_type {
 	/* page not initialized */
 	VM_UNINIT = 0,
 	/* page not related to the file, aka anonymous page */
-	VM_ANON = 1,
+	VM_ANON = 1, // bit 0
 	/* page that realated to the file */
 	VM_FILE = 2,
 	/* page that hold the page cache, for project 4 */
-	VM_PAGE_CACHE = 3,
+	VM_PAGE_CACHE = 3, //bit 1
 
 	/* Bit flags to store state */
-	VM_FRAME = (1<<3),
+	VM_FRAME = (1<<2), // bit 2
 
 	/* Auxillary bit flag marker for store information. You can add more
 	 * markers, until the value is fit in the int. */
-	VM_WRITABLE = (1 << 4),
-	VM_ACCESS = (1 << 5),
-	VM_DIRTY = (1 << 6),
-	VM_STACK = (1 << 7),
-	VM_COW = (1 << 8),
-	VM_NOSWAP = (1 << 9),
-	VM_BSS = (1 << 10),
-	VM_MMAP = (1 << 11), //VM_FILE로 쓰면 안되나? 왜 따로..? 리스트 관리용 페이지...??
-	VM_MARKER_4 = (1 << 12),
+	
+	VM_WRITABLE = (1 << 3), //bit 3
+	VM_ACCESS = (1 << 4),  //bit 4
+	VM_DIRTY = (1 << 5), //bit 5
+	VM_STACK = (1 << 6), //bit 6
+	VM_COW = (1 << 7),
+	VM_NOSWAP = (1 << 8),
+	VM_BSS = (1 << 9),
+	VM_MMAP = (1 << 10), //
+	VM_MARKER_4 = (1 << 11),
 
 	/* DO NOT EXCEED THIS VALUE. */
 	VM_MARKER_END = (1 << 31),
@@ -65,8 +66,10 @@ struct page {
 	struct frame *frame;   /* Back reference for frame */
 
 	/* Your implementation */
-	struct hash_elem hash_elem;
 	enum vm_type type;
+	struct hash_elem hash_elem;
+	struct list_elem cp_elem; // for copying
+	uint64_t *pml4; // for shared frame
 
 	/* Per-type data are binded into the union.
 	 * Each function automatically detects the current union */
@@ -85,7 +88,7 @@ struct frame {
 	void *kva; //kernal virtual address beware of void pointer
 	struct page *page; //page
 	struct hash_elem hash_elem; //hash table element
-	int unwritable;
+	// int unwritable;
 };
 
 /* The function table for page operations.
@@ -108,7 +111,7 @@ struct page_operations {
  * We don't want to force you to obey any specific design for this struct.
  * All designs up to you for this. */
 struct supplemental_page_table {
-	struct lock hash_lock;
+	// struct lock hash_lock;
 	struct hash spt_page_hash;
 };
 
@@ -139,19 +142,36 @@ bool vm_claim_page (void *va);
 enum vm_type page_get_type (struct page *page);
 bool vm_stack_growth (void *addr UNUSED);
 
-#endif  /* VM_VM_H */
 
-/*  -----  Hash Functions  -----  */
 
-unsigned frame_hash(const struct hash_elem *p, void *aux UNUSED);
-bool frame_less(	const struct hash_elem *a_, const struct hash_elem *b_, void *aux UNUSED);
 
 struct frame_table* frame_table_init();
 
-/* Returns a hash value for page p. */
-unsigned page_hash (const struct hash_elem *p_, void *aux UNUSED);
+void disable_shared_frame(struct page *page);
+void enable_shared_frame(struct page *page, struct frame *frame);
+static struct frame *find_shared_frame(struct page *page);
 
-/* Returns true if page a precedes page b. */
+
+/*  -----  Hash Functions  -----  */
+
+/* creating hash elem */
+unsigned frame_hash(const struct hash_elem *p, void *aux UNUSED);
+bool frame_less(	const struct hash_elem *a_, const struct hash_elem *b_, void *aux UNUSED);
+
+unsigned page_hash (const struct hash_elem *p_, void *aux UNUSED);
 bool page_less (const struct hash_elem *a_, const struct hash_elem *b_, void *aux UNUSED);
 
+/* hash action */
 void hash_free_page(struct hash_elem *e, void *aux UNUSED);
+bool hash_copy_action(struct hash_elem *e, void *aux);
+
+/* initialize copy elem */
+#define circular_list_init(elem) do { \
+	(elem)->next = (elem); \
+	(elem)->prev = (elem); \
+} while (0)
+
+/* check if the page is shared */
+#define is_alone(elem) (((elem)->next)==(elem))
+
+#endif  /* VM_VM_H */

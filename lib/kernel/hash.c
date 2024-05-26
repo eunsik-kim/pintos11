@@ -147,7 +147,7 @@ hash_delete (struct hash *h, struct hash_elem *e) {
    any of the functions hash_clear(), hash_destroy(),
    hash_insert(), hash_replace(), or hash_delete(), yields
    undefined behavior, whether done from ACTION or elsewhere. */
-void
+bool
 hash_apply (struct hash *h, hash_action_func *action) {
 	size_t i;
 

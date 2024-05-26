@@ -83,7 +83,7 @@ struct hash_elem *hash_find (struct hash *, struct hash_elem *);
 struct hash_elem *hash_delete (struct hash *, struct hash_elem *);
 
 /* Iteration. */
-void hash_apply (struct hash *, hash_action_func *);
+bool hash_apply (struct hash *, hash_action_func *);
 void hash_first (struct hash_iterator *, struct hash *);
 struct hash_elem *hash_next (struct hash_iterator *);
 struct hash_elem *hash_cur (struct hash_iterator *);

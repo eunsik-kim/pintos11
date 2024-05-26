@@ -10,6 +10,7 @@
 
 #include "vm/vm.h"
 #include "vm/uninit.h"
+#include "userprog/process.h"
 
 static bool uninit_initialize (struct page *page, void *kva);
 static void uninit_destroy (struct page *page);
@@ -53,7 +54,7 @@ uninit_initialize (struct page *page, void *kva) {
 
 	/* TODO: You may need to fix this function. */
 	/* needs more information for filebacked? */
-	return uninit->page_initializer (page, uninit->type, kva) &&
+	return uninit->page_initializer (page, page->type, kva) &&
 		(init ? init (page, aux) : true);
 }
 
@@ -66,6 +67,9 @@ uninit_destroy (struct page *page) {
 	struct uninit_page *uninit UNUSED = &page->uninit;
 	/* TODO: Fill this function.
 	 * TODO: If you don't have anything to do, just return. */
-	if (uninit->aux)
-		free(uninit->aux);
+	if (page->type & VM_MMAP){
+		struct lazy_load_segment_aux *aux = page->uninit.aux;
+		inode_close(aux->inode);
+		free(aux);
+	}
 }

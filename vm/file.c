@@ -1,10 +1,13 @@
 /* file.c: Implementation of memory backed file object (mmaped object). */
 
 #include "vm/vm.h"
+#include "filesys/inode.h"
+#include "include/userprog/process.h"
 
 static bool file_backed_swap_in (struct page *page, void *kva);
 static bool file_backed_swap_out (struct page *page);
 static void file_backed_destroy (struct page *page);
+static void delete_mmap_page(struct page *page);
 
 /* DO NOT MODIFY this struct */
 static const struct page_operations file_ops = {
@@ -32,35 +35,61 @@ file_backed_initializer (struct page *page, enum vm_type type, void *kva) {
 /* Swap in the page by read contents from the file. */
 static bool
 file_backed_swap_in (struct page *page, void *kva) {
-	struct file_page *file_page UNUSED = &page->file;
-	//lazy load
+
+	struct list_elem *next_e = &page->cp_elem;
+	while ((next_e = list_next(next_e)) != &page->cp_elem) {
+		struct page *f_page = list_entry(next_e, struct page, cp_elem);
+		enable_shared_frame(f_page, page->frame); //enable pml4
+	}
+	return lazy_load_segment(page, page->file.aux);
 }
 
 /* Swap out the page by writeback contents to the file. */
 static bool
 file_backed_swap_out (struct page *page) {
-	struct file_page *file_page UNUSED = &page->file;
-	
+	ASSERT(page->frame && (page->type & VM_FRAME));
+	struct lazy_load_segment_aux *aux = page->file.aux;
+
+	/* is dirty */
+	if ((page->type & VM_DIRTY) || pml4_is_dirty(page->pml4, page->va))
+		return true;
+
+	/* not removed */
+	if (!aux->inode->removed)
+		ASSERT(inode_write_at(aux->inode, page->frame->kva, aux->read_bytes, aux->ofs)==aux->read_bytes);
+
+	/* disable pml4 for pages that share frames */
+	struct list_elem *next_e = &page->cp_elem;
+	do{
+		struct page *f_page = list_entry(next_e, struct page, cp_elem);
+		disable_shared_frame(f_page);
+	} while ((next_e = list_next(next_e)) != &page->cp_elem );
+
+	return true;
 
 }
 
 /* Destory the file backed page. PAGE will be freed by the caller. */
 static void
 file_backed_destroy (struct page *page) {
-	struct file_page *file_page UNUSED = &page->file;
-	//close file & save changes
-	if (file_page->aux)
-		free(file_page->aux);
+	delete_mmap_page(page);
+	frame_delete(page);
 }
 
 /* Do the mmap */
-void *
-do_mmap (void *addr, size_t length, int writable,
-		struct file *file, off_t offset) {
-		
-}
+static void delete_mmap_page(struct page *page)
+{
+	struct file_page *file_page = &page->file;
+	struct lazy_load_segment_aux *aux = file_page->aux;
 
-/* Do the munmap */
-void
-do_munmap (void *addr) {
+	if (page->type & VM_MMAP)
+	{
+		bool is_dirty = (page->type & VM_DIRTY) || pml4_is_dirty(thread_current()->pml4, page->va);
+		// not removed and dirty
+		if ((page->type & VM_FRAME) && is_dirty && aux->inode && !aux->inode->removed)
+			ASSERT(inode_write_at(aux->inode, page->frame->kva, aux->read_bytes, aux->ofs) == aux->read_bytes);
+
+		inode_close(aux->inode);
+		free(aux);
+	}
 }

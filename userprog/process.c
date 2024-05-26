@@ -19,6 +19,7 @@
 #include "threads/vaddr.h"
 #include "intrinsic.h"
 #include "userprog/syscall.h"
+#include "include/filesys/inode.h"
 #ifdef VM
 #include "vm/vm.h"
 #include "hash.h"
@@ -68,9 +69,9 @@ tid_t process_create_initd(const char *file_name)
 static void
 initd(void *f_name)
 {
-#ifdef VM
-	supplemental_page_table_init(&thread_current()->spt);
-#endif
+// #ifdef VM
+// 	supplemental_page_table_init(&thread_current()->spt);
+// #endif
 
 	process_init();
 
@@ -81,7 +82,7 @@ initd(void *f_name)
 
 /* Clones the current process as `name`. Returns the new process's thread id, or
  * TID_ERROR if the thread cannot be created. */
-tid_t process_fork(const char *name, struct intr_frame *if_ UNUSED)
+tid_t process_fork(const char *name)
 {
 	/* Clone current thread to new thread.*/
 	return thread_create(name, PRI_DEFAULT, __do_fork, thread_current());
@@ -149,10 +150,9 @@ __do_fork(void *aux)
 
 	process_activate(current);
 #ifdef VM
-	supplemental_page_table_init(&current->spt); 
-	// dst, src 순서(copy parent's spt to current spt)
-	// if (!supplemental_page_table_copy(&current->spt, &parent->spt))
-	// 	goto error;
+	current->stack_bottom = parent->stack_bottom;
+	if (!supplemental_page_table_copy(&current->spt, &parent->spt))
+		goto error;
 #else
 	if (!pml4_for_each(parent->pml4, duplicate_pte, parent))	// pml4의 page복사
 		goto error;
@@ -191,9 +191,28 @@ int process_exec(void *f_name)
 	_if.cs = SEL_UCSEG;
 	_if.eflags = FLAG_IF | FLAG_MBS;
 
+	struct thread *cur = thread_current();
+
 	/* We first kill the current context */
+#ifdef VM
+	/* mmap */
+	struct list inherit_list;
+	list_init(&inherit_list);
+	cur->spt.spt_page_hash.aux = &inherit_list;
 	process_cleanup();
-	
+	supplemental_page_table_init(&cur->spt);
+	/* mmap page inherit */
+	while (!list_empty(&inherit_list)){
+		struct page *inpage = hash_entry((struct hash_elem *)list_pop_front(&inherit_list),struct page, hash_elem);
+		if (!spt_insert_page(&cur->spt, inpage)
+			&& !pml4_set_page(cur->pml4, inpage->va, inpage->frame->kva, inpage->type & VM_WRITABLE))
+				return -1;
+	}
+
+#else
+	process_cleanup();
+#endif
+
 	/* filename 파싱 시작 */
 	char *next_ptr, *ret_ptr, *argv[64];
 	int argc = 0;
@@ -392,18 +411,16 @@ void process_exit(void)
 	// delete fdt and file (it should be out of process_cleanup())
 	process_delete_fdt(cur);
 
+#ifdef VM
+	cur->spt.spt_page_hash.aux = NULL;
+#endif
+	process_cleanup();
+
 	// give exit_status to parent thread
 	if (cur->fork_elem.prev != NULL) {		
 		sema_up(&cur->wait_sema);	
 		sema_down(&cur->fork_sema);	// if parent thread doesn't wait, child will be zombie thread.
 	}
-
-	process_cleanup(); //releases filesys_lock in process_cleanup
-
-	/* destroy spt */ 
-	// lock_acquire(&cur->spt->hash_lock);
-	// hash_destroy(&cur->spt->spt_page_hash, hash_delete);
-	// lock_release(&cur->spt->hash_lock);
 
 }
 
@@ -507,9 +524,9 @@ struct ELF64_PHDR
 
 static bool setup_stack(struct intr_frame *if_);
 static bool validate_segment(const struct Phdr *, struct file *);
-static bool load_segment(struct file *file, off_t ofs, uint8_t *upage,
-						 uint32_t read_bytes, uint32_t zero_bytes,
-						 bool writable);
+// static bool load_segment(struct file *file, off_t ofs, uint8_t *upage,
+// 						 uint32_t read_bytes, uint32_t zero_bytes,
+// 						 bool writable);
 
 /* Loads an ELF executable from FILE_NAME into the current thread.
  * Stores the executable's entry point into *RIP
@@ -778,28 +795,29 @@ install_page(void *upage, void *kpage, bool writable)
  * If you want to implement the function for only project 2, implement it on the
  * upper block. */
 
-static bool
+bool
 lazy_load_segment(struct page *page, void *aux)
 {
 	/* TODO: Load the segment from the file */
 	/* TODO: This called when the first page fault occurs on address VA. */
 	/* TODO: VA is available when calling this function. */
-	uint8_t *kpage = page->frame->kva;
-	struct thread *cur = thread_current();
-	struct file *file = cur->opend_file;
-
-	ASSERT(kpage && file && aux);
-
-	struct lazy_load_segment_aux * args = (struct lazy_load_segment_aux *) aux;
+	void *kpage = page->frame->kva;
+	struct lazy_load_segment_aux *args = (struct lazy_load_segment_aux *) aux;
+	struct inode *inode = args->inode;
+	ASSERT(kpage && inode && aux);
+	
 	off_t ofs = args->ofs;
-	size_t page_read_bytes = args->page_read_bytes;
-	size_t page_zero_bytes = args->page_zero_bytes;
+	size_t page_read_bytes = args->read_bytes;
+	size_t page_zero_bytes = PGSIZE - args->read_bytes;
 
-	// free(args); -> fork할 때 문제가 생길 수 있음 그러면 언제 free?
-
-	file_seek(file, ofs);
-	if (file_read(file, kpage, page_read_bytes)!=(int)page_read_bytes)
+	/* Load page */
+	if (inode_read_at(inode, kpage, page_read_bytes, ofs) != (int)page_read_bytes)
 		return false;
+	
+	memset(kpage + page_read_bytes, 0, page_zero_bytes);
+
+	if (!(page->type & VM_MMAP))
+		free(args);
 	return true;
 }
 
@@ -817,14 +835,21 @@ lazy_load_segment(struct page *page, void *aux)
  *
  * Return true if successful, false if a memory allocation error
  * or disk read error occurs. */
-static bool
+bool
 load_segment(struct file *file, off_t ofs, uint8_t *upage,
 			 uint32_t read_bytes, uint32_t zero_bytes, bool writable)
 {
 	ASSERT((read_bytes + zero_bytes) % PGSIZE == 0);
 	ASSERT(pg_ofs(upage) == 0);
 	ASSERT(ofs % PGSIZE == 0);
-	// off_t ofs = ofs;
+
+	int cnt = 0;
+	enum vm_type type_file = VM_FILE;
+	struct lazy_load_segment_aux *aux;
+	if ((uint64_t)file & 1){ //check mmap call
+		file = (uint64_t)file &~1;
+		type_file |= VM_MMAP;
+	}
 
 	while (read_bytes > 0 || zero_bytes > 0)
 	{
@@ -834,16 +859,34 @@ load_segment(struct file *file, off_t ofs, uint8_t *upage,
 		size_t page_read_bytes = read_bytes < PGSIZE ? read_bytes : PGSIZE;
 		size_t page_zero_bytes = PGSIZE - page_read_bytes;
 
-		/* TODO: Set up aux to pass information to the lazy_load_segment. */
-		struct lazy_load_segment_aux *aux = (struct lazy_load_segment_aux *) malloc(sizeof(struct lazy_load_segment_aux));
-		aux->file = file;
-		aux->ofs = ofs;
-		aux->page_read_bytes = page_read_bytes;
-		aux->page_zero_bytes = page_zero_bytes;
-		
-		if (!vm_alloc_page_with_initializer(VM_ANON, upage,
-											writable, lazy_load_segment, aux)) // Set up how to load
+		aux = (struct lazy_load_segment_aux *) malloc(sizeof(struct lazy_load_segment_aux));
+		if (!aux)
 			return false;
+		
+		aux->ofs = ofs;
+		aux->pg_cnt = 0;
+		aux->inode= file->inode;
+		aux->read_bytes = page_read_bytes;
+		// aux->zero_bytes = page_zero_bytes;
+		if (!cnt++ && (type_file & VM_MMAP)) // record mmap pg cnt
+			aux->pg_cnt = read_bytes % PGSIZE ? read_bytes / PGSIZE +1: read_bytes / PGSIZE;
+		
+		if(type_file & VM_MMAP)
+			inode_reopen(file->inode);
+
+		/* TODO: Set up aux to pass information to the lazy_load_segment. */
+		if (!vm_alloc_page_with_initializer(type_file, upage,
+											writable, lazy_load_segment, aux)) // Set up how to load
+		{	// if fails delete page
+			while (cnt--){
+				struct thread *cur = thread_current();
+				struct page *page = spt_find_page(&cur->spt, upage);
+				if (page)
+					spt_remove_page(&cur->spt, page);
+				upage -= PGSIZE;			
+			}
+			return false;
+		}
 
 		/* Advance. */
 		read_bytes -= page_read_bytes;

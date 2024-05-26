@@ -6,6 +6,7 @@
 struct page;
 enum vm_type;
 
+
 struct file_page {
 	struct lazy_load_segment_aux *aux;
 };
