@@ -127,15 +127,12 @@ fat_create (void) {
 
 	// Set up ROOT_DIR_CLST
 	// fat_put (ROOT_DIR_CLUSTER, EOChain);
-	if (!fat_get(ROOT_DIR_CLUSTER))
-		dir_create (cluster_to_sector (ROOT_DIR_CLUSTER), 16, cluster_to_sector (ROOT_DIR_CLUSTER));
-
-	// // Fill up ROOT_DIR_CLUSTER region with 0
-	// uint8_t *buf = calloc (1, DISK_SECTOR_SIZE);
-	// if (buf == NULL)
-	// 	PANIC ("FAT create failed due to OOM");
-	// disk_write (filesys_disk, cluster_to_sector (ROOT_DIR_CLUSTER), buf);
-	// free (buf);
+	// Fill up ROOT_DIR_CLUSTER region with 0
+	uint8_t *buf = calloc (1, DISK_SECTOR_SIZE);
+	if (buf == NULL)
+		PANIC ("FAT create failed due to OOM");
+	disk_write (filesys_disk, cluster_to_sector (ROOT_DIR_CLUSTER), buf);
+	free (buf);
 }
 
 void
@@ -240,7 +237,10 @@ cluster_t
 fat_get (cluster_t clst) {
 	/* TODO: Your code goes here. */
 	ASSERT(clst != EOChain && clst);
-	return fat_fs->fat[clst-1];
+	lock_acquire(&fat_fs->write_lock);
+	cluster_t out = fat_fs->fat[clst-1];
+	lock_release(&fat_fs->write_lock);
+	return out;
 }
 
 /* Covert a cluster # to a sector number. */

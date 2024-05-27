@@ -59,6 +59,7 @@ inode_open (disk_sector_t sector) {
 	inode->deny_write_cnt = 0;
 	inode->cwd_cnt = 0;
 	inode->removed = false;
+	lock_init(&inode->w_lock);
 	disk_read (filesys_disk, inode->sector, &inode->data);
 	return inode;
 }
@@ -81,6 +82,7 @@ inode_get_inumber (const struct inode *inode) {
  * has it open. */
 void
 inode_remove (struct inode *inode) {
+	ASSERT(inode->data.magic == INODE_MAGIC);
 	ASSERT (inode != NULL);
 	inode->removed = true;
 }
@@ -89,7 +91,7 @@ inode_remove (struct inode *inode) {
    May be called at most once per inode opener. */
 	void
 inode_deny_write (struct inode *inode) 
-{
+{	
 	inode->deny_write_cnt++;
 	ASSERT (inode->deny_write_cnt <= inode->open_cnt);
 }
@@ -99,6 +101,7 @@ inode_deny_write (struct inode *inode)
  * inode_deny_write() on the inode, before closing the inode. */
 void
 inode_allow_write (struct inode *inode) {
+	ASSERT(inode->data.magic == INODE_MAGIC);
 	ASSERT (inode->deny_write_cnt > 0);
 	ASSERT (inode->deny_write_cnt <= inode->open_cnt);
 	inode->deny_write_cnt--;
@@ -107,9 +110,13 @@ inode_allow_write (struct inode *inode) {
 /* Returns the length, in bytes, of INODE's data. */
 off_t
 inode_length (const struct inode *inode) {
-	symlink_change_file(inode);
+	ASSERT(inode->data.magic == INODE_MAGIC);
+	struct thread *cur = thread_current();
+	bool flg = symlink_change_file(inode);
 	off_t len = inode->data.length;
-	file_change_symlink(inode);
+	if (flg)
+		file_change_symlink(inode);
+			
 	return len;
 }
 
@@ -307,6 +314,7 @@ inode_write_at (struct inode *inode, const void *buffer_, off_t size,
 /* inode의 offset위치에 해당하는 sector return 실패하면 -1 return. */
 static disk_sector_t
 byte_to_sector (const struct inode *inode, off_t pos) {
+	ASSERT(inode->data.magic == INODE_MAGIC);
 	ASSERT (inode != NULL);
 	if (pos > inode->data.length)
 		return -1;
@@ -340,8 +348,11 @@ inode_close (struct inode *inode) {
 
 		/* Deallocate blocks if removed. 
 			only target file can delete disk */
-		if (inode->removed && (inode->sector == inode->data.target_sector)) 
+		if (inode->removed && (inode->sector == inode->data.target_sector)) {
+			disk_write(filesys_disk, inode->sector, &inode->data);
 			fat_remove_chain(sector_to_cluster(inode->sector), 0);
+		}
+			
 		free (inode); 
 	}
 }
@@ -401,6 +412,7 @@ inode_create (disk_sector_t sector, off_t length) {
 /* file read with fat */
 off_t
 inode_read_at (struct inode *inode, void *buffer_, off_t size, off_t offset) {
+	ASSERT(inode->data.magic == INODE_MAGIC);
 	symlink_change_file(inode);
 
 	cluster_t clst;
@@ -408,12 +420,14 @@ inode_read_at (struct inode *inode, void *buffer_, off_t size, off_t offset) {
 	uint8_t *bounce = NULL;
 	uint8_t *buffer = buffer_;
 	disk_sector_t sector_idx = byte_to_sector (inode, offset);
+	int len = inode_length (inode);
+	off_t origin_size = size, origin_offset = offset;
 	while (size > 0) {
 		/* Disk sector to read, starting byte offset within sector. */
 		int sector_ofs = offset % DISK_SECTOR_SIZE;
 
 		/* Bytes left in inode, bytes left in sector, lesser of the two. */
-		off_t inode_left = inode_length (inode) - offset;
+		off_t inode_left = len - offset;
 		int sector_left = DISK_SECTOR_SIZE - sector_ofs;
 		int min_left = inode_left < sector_left ? inode_left : sector_left;
 
@@ -450,6 +464,12 @@ inode_read_at (struct inode *inode, void *buffer_, off_t size, off_t offset) {
 	}
 	free (bounce);
 	file_change_symlink(inode);
+
+	// check file growth have been occured
+	if (len != inode_length (inode)){
+		return inode_read_at(inode, buffer_, origin_size, origin_offset);
+	}
+
 	return bytes_read;
 }
 
@@ -460,8 +480,11 @@ inode_read_at (struct inode *inode, void *buffer_, off_t size, off_t offset) {
  * growth is not yet implemented.) */
 off_t
 inode_write_at (struct inode *inode, const void *buffer_, off_t size, off_t offset) {
-	symlink_change_file(inode);
+	ASSERT(inode->data.magic == INODE_MAGIC);
+	if (size + offset == 0)
+		return 0;
 
+	symlink_change_file(inode);
 	if (inode->deny_write_cnt)
 		return 0;
 
@@ -470,17 +493,21 @@ inode_write_at (struct inode *inode, const void *buffer_, off_t size, off_t offs
 	disk_sector_t sector, sector_idx;
 	cluster_t clst, last_clst, off_clst;
 	off_t create_cnt, add_length = offset + size - inode->data.length;
-	off_t add, bytes_written = 0, res = inode->data.length % DISK_SECTOR_SIZE;
-	add = (res) ? 1 : 0;
+	off_t bytes_written = 0, res = inode->data.length % DISK_SECTOR_SIZE;
 
 	// file growth case 1: no sector to write, case 2: not enough place to write
-	if ((inode->data.length == 0) || (add_length + res - add) / DISK_SECTOR_SIZE > 0) {
+	if ((inode->data.length == 0) || (!res && add_length > 0) 
+					|| (add_length + res) / DISK_SECTOR_SIZE > 0) {
+		lock_acquire(&inode->w_lock);		// file growth is atomic action
 		if (inode->data.length == 0) {	// case 1
 			clst = last_clst = sector_to_cluster(inode->data.start);	
 			create_cnt = bytes_to_sectors(add_length + res);		
 		} else {	// case 2
 			clst = last_clst = sector_to_cluster(byte_to_sector(inode, inode->data.length));
-			create_cnt = (add_length + res - add) / DISK_SECTOR_SIZE;		
+			if (!res && add_length > 0)
+				create_cnt = bytes_to_sectors(add_length);
+			else 			
+				create_cnt = (add_length + res) / DISK_SECTOR_SIZE;		
 		}
 		
 		// append cluster chain 
@@ -492,6 +519,7 @@ inode_write_at (struct inode *inode, const void *buffer_, off_t size, off_t offs
 				fat_remove_chain(fat_get(last_clst), last_clst);
 			else if (fat_get(last_clst) != EOChain)	// case 1, only created chain  
 				fat_remove_chain(fat_get(last_clst), last_clst);
+			lock_release(&inode->w_lock);
 			return false;
 		}
 
@@ -514,22 +542,26 @@ inode_write_at (struct inode *inode, const void *buffer_, off_t size, off_t offs
 		}
 		if (last_clst != off_clst)	// careful not to overlap last sector
 			disk_write (filesys_disk, cluster_to_sector(off_clst), zeros);	
+		lock_release(&inode->w_lock);	
 		
 	} else {
+		lock_acquire(&inode->w_lock);		// file growth is atomic action
 		if (add_length > 0) {
 			// update inode struct on disk (not append sector)
 			inode->data.length += add_length;
 			disk_write (filesys_disk, inode->data.target_sector, &inode->data);
 		}
 		sector_idx = byte_to_sector(inode, offset);
+		lock_release(&inode->w_lock);	
 	}
+	int len = inode_length(inode);
 	
 	while (size > 0) {
 		/* Sector to write, starting byte offset within sector. */
 		int sector_ofs = offset % DISK_SECTOR_SIZE;
 
 		/* Bytes left in inode, bytes left in sector, lesser of the two. */
-		off_t inode_left = inode_length (inode) - offset;
+		off_t inode_left = len - offset;
 		int sector_left = DISK_SECTOR_SIZE - sector_ofs;
 		int min_left = inode_left < sector_left ? inode_left : sector_left;
 
@@ -577,9 +609,9 @@ inode_write_at (struct inode *inode, const void *buffer_, off_t size, off_t offs
 }
 
 /* read나 write하기전 target file로 변--신 */
-void symlink_change_file(struct inode* inode) {
+bool symlink_change_file(struct inode* inode) {
 	if (!checklink(inode->data.isdir))
-		return;
+		return false;
 	
 	char target[512];
 	disk_sector_t sector = inode->data.start;
@@ -604,6 +636,7 @@ void symlink_change_file(struct inode* inode) {
 		else
 			file_close(file);
 	}
+	return true;
 }
 
 /* read나 write한뒤 원래 link file로 변--신 */

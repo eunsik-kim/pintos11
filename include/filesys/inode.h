@@ -5,6 +5,7 @@
 #include "filesys/off_t.h"
 #include "devices/disk.h"
 #include "lib/kernel/list.h"
+#include "threads/synch.h"
 
 struct bitmap;
 
@@ -21,7 +22,7 @@ void inode_deny_write (struct inode *);
 void inode_allow_write (struct inode *);
 off_t inode_length (const struct inode *);
 /* for symlink */
-void symlink_change_file(struct inode* inode);
+bool symlink_change_file(struct inode* inode);
 void file_change_symlink(struct inode* inode);
 
 /* On-disk inode.
@@ -43,6 +44,7 @@ struct inode {
 	bool removed;                       /* True if deleted, false otherwise. */
 	int deny_write_cnt;                 /* 0: writes ok, >0: deny writes. */
 	int cwd_cnt;						/* checking cwd */
+	struct lock w_lock;					/* for synchronization */
 	struct inode_disk data;             /* Inode content. */
 };
 

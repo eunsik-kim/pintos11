@@ -13,6 +13,7 @@
 struct dir {
 	struct inode *inode;                /* Backing store. */
 	off_t pos;                          /* Current position. */
+	struct lock d_lock;
 };
 
 /* A single directory entry. */
@@ -59,6 +60,7 @@ dir_open (struct inode *inode) {
 	if (inode != NULL && dir != NULL) {
 		dir->inode = inode;
 		dir->pos = 0;
+		lock_init(&dir->d_lock);
 		return dir;
 	} else {
 		inode_close (inode);
@@ -224,6 +226,7 @@ dir_lookup (const struct dir *dir, const char *name,
  * error occurs. */
 bool
 dir_add (struct dir *dir, const char *name, disk_sector_t inode_sector) {
+	lock_acquire(&dir->d_lock);
 	struct dir_entry e;
 	off_t ofs;
 	bool success = false;
@@ -258,6 +261,7 @@ dir_add (struct dir *dir, const char *name, disk_sector_t inode_sector) {
 	success = inode_write_at (dir->inode, &e, sizeof e, ofs) == sizeof e;
 
 done:
+	lock_release(&dir->d_lock);
 	return success;
 }
 
@@ -266,6 +270,7 @@ done:
  * which occurs only if there is no file with the given NAME. */
 bool
 dir_remove (struct dir *dir, const char *name) {
+	lock_acquire(&dir->d_lock);
 	struct dir_entry e, temp_e;
 	struct inode *inode = NULL;
 	bool success = false;
@@ -305,6 +310,7 @@ dir_remove (struct dir *dir, const char *name) {
 
 done:
 	inode_close (inode);
+	lock_release(&dir->d_lock);
 	return success;
 }
 
@@ -314,7 +320,7 @@ done:
 bool
 dir_readdir (struct dir *dir, char name[NAME_MAX + 1]) {
 	struct dir_entry e;
-
+	lock_acquire(&dir->d_lock);
 	while (inode_read_at (dir->inode, &e, sizeof e, dir->pos) == sizeof e) {
 		dir->pos += sizeof e;
 		if (!strcmp(".", e.name) || !strcmp("..", e.name))
@@ -322,9 +328,11 @@ dir_readdir (struct dir *dir, char name[NAME_MAX + 1]) {
 
 		if (e.in_use) {
 			strlcpy (name, e.name, NAME_MAX + 1);
+			lock_release(&dir->d_lock);
 			return true;
 		}
 	}
+	lock_release(&dir->d_lock);
 	return false;
 }
 

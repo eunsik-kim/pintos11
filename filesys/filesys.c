@@ -156,6 +156,8 @@ do_format (void) {
 #ifdef EFILESYS
 	/* Create FAT and save it to the disk. */
 	fat_create ();
+	if (!fat_get(ROOT_DIR_CLUSTER))
+		dir_create (cluster_to_sector (ROOT_DIR_CLUSTER), 16, cluster_to_sector (ROOT_DIR_CLUSTER));
 	fat_close ();
 #else
 	free_map_create ();

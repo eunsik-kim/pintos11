@@ -45,7 +45,6 @@ struct func_params
 };
 
 /* if access to filesys.c, should sync */
-struct lock filesys_lock;
 void *stdin_ptr;
 void *stdout_ptr;
 void *stderr_ptr;
@@ -96,7 +95,6 @@ void syscall_init(void)
 	 * mode stack. Therefore, we masked the FLAG_FL. */
 	write_msr(MSR_SYSCALL_MASK,
 			  FLAG_IF | FLAG_TF | FLAG_DF | FLAG_IOPL | FLAG_AC | FLAG_NT);
-	lock_init(&filesys_lock);
 	stdin_ptr = (0x123456780);		// no mean, just for fun
 	stdout_ptr = stdin_ptr + 8;
 	stderr_ptr = stdin_ptr + 16;
@@ -449,10 +447,7 @@ int wait(pid_t pid)
 bool create(const char *file, unsigned initial_size)
 {	
 	check_address(file);
-	lock_acquire(&filesys_lock);
-	bool flag = filesys_create(file, initial_size);
-	lock_release(&filesys_lock);
-	return flag;
+	return filesys_create(file, initial_size);
 }
 
 /* file을 삭제 후 성공여부 return, file이 없거나 inode 생성에 실패시 fail 
@@ -461,10 +456,7 @@ bool create(const char *file, unsigned initial_size)
 bool remove(const char *file)
 {
 	check_address(file);
-	lock_acquire(&filesys_lock);
-	bool flag = filesys_remove(file);
-	lock_release(&filesys_lock);
-	return flag;
+	return filesys_remove(file);
 }
 
 /*
@@ -476,9 +468,7 @@ bool remove(const char *file)
 int open(const char *file)
 {
 	check_address(file);
-	lock_acquire(&filesys_lock);
 	struct file *file_entity = filesys_open(file);
-	lock_release(&filesys_lock);
 	if (file_entity == NULL) 	// wrong file name or oom or not in disk (initialized from arg -p)
 		return -1;
 	
@@ -544,10 +534,8 @@ int read(int fd, void *buffer, unsigned size)
 		if (cur_file->pos == inode_length(cur_file->inode)) // end of file
 			return 0;
 
-		lock_acquire(&filesys_lock);
 		if ((bytes_read = file_read(cur_file, buffer, size)) == 0)  // could not read
 			return -1;
-		lock_release(&filesys_lock);
 	}
 	return bytes_read;
 }
@@ -584,9 +572,7 @@ int write(int fd, const void *buffer, unsigned size)
 			putchar(buffer++);
 
 	else{	// file growth is not implemented by the basic file system
-		lock_acquire(&filesys_lock);
 		bytes_write = file_write(cur_file, buffer, size);
-		lock_release(&filesys_lock);
 	}  
 	return bytes_write;
 }
@@ -833,9 +819,7 @@ int symlink (const char* target, const char* linkpath) {
 	if (!create(linkpath, DISK_SECTOR_SIZE))
 		return -1;
 
-	lock_acquire(&filesys_lock);
 	struct file *file_entity = filesys_open(linkpath);
-	lock_release(&filesys_lock);
 	struct inode_disk *disk_inode = &file_entity->inode->data;
 
 	// init symlink 

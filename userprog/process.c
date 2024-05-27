@@ -425,9 +425,6 @@ static void
 process_cleanup(void)
 {
 	struct thread *curr = thread_current();
-	// avoid deadlock
-	if (filesys_lock.holder == curr)
-		lock_release(&filesys_lock);
 
 	if (curr->cwd) {
 		cwd_cnt_down(curr->cwd);
@@ -546,7 +543,6 @@ load(const char *file_name, struct intr_frame *if_)
 		goto done;
 	
 	process_activate(thread_current());
-	lock_acquire(&filesys_lock);
 	/* Open executable file. */
 	file = filesys_open(file_name);
 	if (file == NULL)
@@ -634,7 +630,6 @@ load(const char *file_name, struct intr_frame *if_)
 	success = true;
 
 done:
-	lock_release(&filesys_lock);
 	/* We arrive here whether the load is successful or not. */
 	return success;
 }
