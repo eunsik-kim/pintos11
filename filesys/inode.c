@@ -114,9 +114,6 @@ inode_length (const struct inode *inode) {
 	struct thread *cur = thread_current();
 	bool flg = symlink_change_file(inode);
 	off_t len = inode->data.length;
-	if (flg)
-		file_change_symlink(inode);
-			
 	return len;
 }
 
@@ -323,9 +320,28 @@ byte_to_sector (const struct inode *inode, off_t pos) {
 	int sector_cnt = pos / DISK_SECTOR_SIZE;
 	clst = sector_to_cluster(inode->data.start);
 	while (sector_cnt-- > 0) 
-		if (((clst = fat_get(clst)) == EOChain) || !clst)
-			break;
-	
+		clst = fat_get(clst);
+
+	if (sector_cnt > 0)
+		return -1;
+
+	return cluster_to_sector(clst);
+}
+
+/* inode의 offset위치에 해당하는 sector return 실패하면 -1 return. */
+static disk_sector_t
+byte_to_sector2 (const struct inode *inode, off_t pos) {
+	ASSERT(inode->data.magic == INODE_MAGIC);
+	ASSERT (inode != NULL);
+	if (pos > inode->data.length)
+		return -1;
+
+	cluster_t clst;
+	int sector_cnt = pos / DISK_SECTOR_SIZE - (pos % DISK_SECTOR_SIZE == 0);
+	clst = sector_to_cluster(inode->data.start);
+	while (sector_cnt-- > 0) 
+		clst = fat_get(clst);
+
 	if (sector_cnt > 0)
 		return -1;
 
@@ -463,13 +479,11 @@ inode_read_at (struct inode *inode, void *buffer_, off_t size, off_t offset) {
 		sector_idx = cluster_to_sector(clst);
 	}
 	free (bounce);
-	file_change_symlink(inode);
 
 	// check file growth have been occured
-	if (len != inode_length (inode)){
+	if (len != inode_length (inode))
 		return inode_read_at(inode, buffer_, origin_size, origin_offset);
-	}
-
+	
 	return bytes_read;
 }
 
@@ -494,20 +508,21 @@ inode_write_at (struct inode *inode, const void *buffer_, off_t size, off_t offs
 	cluster_t clst, last_clst, off_clst;
 	off_t create_cnt, add_length = offset + size - inode->data.length;
 	off_t bytes_written = 0, res = inode->data.length % DISK_SECTOR_SIZE;
-
+	off_t temp = ((res + add_length) / DISK_SECTOR_SIZE - ((res + add_length) % DISK_SECTOR_SIZE == 0));
 	// file growth case 1: no sector to write, case 2: not enough place to write
-	if ((inode->data.length == 0) || (!res && add_length > 0) 
-					|| (add_length + res) / DISK_SECTOR_SIZE > 0) {
+	if ((inode->data.length == 0) || (!res && add_length > 0) || temp > 0) {
 		lock_acquire(&inode->w_lock);		// file growth is atomic action
 		if (inode->data.length == 0) {	// case 1
 			clst = last_clst = sector_to_cluster(inode->data.start);	
-			create_cnt = bytes_to_sectors(add_length + res);		
+			create_cnt = bytes_to_sectors(add_length);		
 		} else {	// case 2
-			clst = last_clst = sector_to_cluster(byte_to_sector(inode, inode->data.length));
-			if (!res && add_length > 0)
+			if (!res && add_length > 0) {
+				clst = last_clst = sector_to_cluster(byte_to_sector2(inode, inode->data.length));
 				create_cnt = bytes_to_sectors(add_length);
-			else 			
-				create_cnt = (add_length + res) / DISK_SECTOR_SIZE;		
+			} else{
+				clst = last_clst = sector_to_cluster(byte_to_sector(inode, inode->data.length));
+				create_cnt = temp;		
+			}
 		}
 		
 		// append cluster chain 
@@ -604,7 +619,6 @@ inode_write_at (struct inode *inode, const void *buffer_, off_t size, off_t offs
 		sector_idx = cluster_to_sector(clst);
 	}
 	free (bounce);
-	file_change_symlink(inode);
 	return bytes_written;
 }
 
@@ -629,7 +643,7 @@ bool symlink_change_file(struct inode* inode) {
 		else {
 			sector = 0;
 			memcpy(&inode->data, &file->inode->data, sizeof(struct inode_disk)); 
-		}
+		}	
 
 		if (checkdir(file_entity)) 
 			dir_close(getptr(file_entity));

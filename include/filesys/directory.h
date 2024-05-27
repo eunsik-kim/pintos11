@@ -18,6 +18,7 @@ struct inode;
 struct dir *find_dir(char *paths, char *file_name);
 void cwd_cnt_up(struct dir *dir);
 void cwd_cnt_down(struct dir *dir);
+bool symlink_change_dir(struct inode* inode);
 
 /* Opening and closing directories. */
 bool dir_create (disk_sector_t sector, size_t entry_cnt, disk_sector_t parent_sector);

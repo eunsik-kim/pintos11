@@ -757,7 +757,6 @@ bool mkdir (const char *dir) {
 	}
 
 	if(!dir_add(tar_dir, file_name, inode_sector)) {	// include checking same file_name
-		dir_remove(tar_dir, file_name);
 		dir_close(tar_dir);
 		free(file_name);
 		return false;
@@ -825,7 +824,7 @@ int symlink (const char* target, const char* linkpath) {
 	// init symlink 
 	disk_inode->isdir = 2;	// link flg
 	disk_write(filesys_disk, file_entity->inode->sector, disk_inode);
-
+	
 	// record file name
 	char buf[512];
 	strlcpy(buf, target, sizeof(target) + 1);

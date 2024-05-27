@@ -8,6 +8,7 @@
 #include "filesys/fat.h"
 #include "threads/thread.h"
 #include <string.h>
+#include "filesys/inode.h"
 
 /* A directory. */
 struct dir {
@@ -22,6 +23,10 @@ struct dir_entry {
 	char name[NAME_MAX + 1];            /* Null terminated file name. */
 	bool in_use;                        /* In use or free? */
 };
+
+static bool
+lookup (const struct dir *dir, const char *name,
+		struct dir_entry *ep, off_t *ofsp);
 
 /* Creates a directory with space for ENTRY_CNT entries in the
  * given SECTOR.  Returns true if successful, false on failure. */
@@ -164,8 +169,6 @@ struct dir *find_dir(char *origin_paths, char *file_name) {
 				cur_path =".";
 		} else
 			next_path = strtok_r(NULL, "/", &rest_path);
-		
-		
 	}
 	strlcpy(file_name, cur_path, strnlen(cur_path, NAME_MAX) + 1);
 	palloc_free_page(paths);
@@ -185,7 +188,7 @@ lookup (const struct dir *dir, const char *name,
 
 	ASSERT (dir != NULL);
 	ASSERT (name != NULL);
-
+	symlink_change_dir(dir->inode);
 	for (ofs = 0; inode_read_at (dir->inode, &e, sizeof e, ofs) == sizeof e;
 			ofs += sizeof e)
 		if (e.in_use && !strcmp (name, e.name)) {
@@ -230,10 +233,9 @@ dir_add (struct dir *dir, const char *name, disk_sector_t inode_sector) {
 	struct dir_entry e;
 	off_t ofs;
 	bool success = false;
-
+	
 	ASSERT (dir != NULL);
 	ASSERT (name != NULL);
-
 	/* Check NAME for validity. */
 	if (*name == '\0' || strlen (name) > NAME_MAX)
 		return false;
@@ -278,7 +280,6 @@ dir_remove (struct dir *dir, const char *name) {
 
 	ASSERT (dir != NULL);
 	ASSERT (name != NULL);
-
 	/* Find directory entry. */
 	if (!lookup (dir, name, &e, &ofs))
 		goto done;
@@ -342,4 +343,37 @@ void cwd_cnt_up(struct dir *dir) {
 
 void cwd_cnt_down(struct dir *dir) {
 	dir->inode->cwd_cnt--;
+}
+
+/* read나 write하기전 target file로 진--화
+ dir는 안에 file이 탑승하기 때문에 변--신 해제를 못함(by persistence test) */
+bool symlink_change_dir(struct inode* inode) {
+	if (!checklink(inode->data.isdir))
+		return false;
+	
+	char target[512];
+	disk_sector_t sector = inode->data.start;
+	
+	/* chaining until finding target file */
+	while (sector) {
+		disk_read(filesys_disk, sector, target);
+		void *file_entity = filesys_open(target);
+		if (!file_entity)
+			PANIC("No such file or directory");
+
+		struct dir *dir = getptr(file_entity);
+		if (checklink(dir->inode->data.isdir))
+			sector = dir->inode->data.start;
+		else {
+			sector = 0;
+			disk_write(filesys_disk, inode->sector, &dir->inode->data);
+			memcpy(&inode->data, &dir->inode->data, sizeof(struct inode_disk)); 
+		}	
+
+		if (checkdir(file_entity)) 
+			dir_close(getptr(dir));
+		else
+			file_close(dir);
+	}
+	return true;
 }
