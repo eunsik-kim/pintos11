@@ -10,11 +10,18 @@
  * After directories are implemented, this maximum length may be
  * retained, but much longer full path names must be allowed. */
 #define NAME_MAX 14
+#define MAX_FILE_PATH 100
 
 struct inode;
 
+/* Subdirectories and Soft Links */
+struct dir *find_dir(char *paths, char *file_name);
+void cwd_cnt_up(struct dir *dir);
+void cwd_cnt_down(struct dir *dir);
+bool symlink_change_dir(struct inode* inode);
+
 /* Opening and closing directories. */
-bool dir_create (disk_sector_t sector, size_t entry_cnt);
+bool dir_create (disk_sector_t sector, size_t entry_cnt, disk_sector_t parent_sector);
 struct dir *dir_open (struct inode *);
 struct dir *dir_open_root (void);
 struct dir *dir_reopen (struct dir *);

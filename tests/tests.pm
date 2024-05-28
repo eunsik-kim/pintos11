@@ -58,7 +58,7 @@ sub check_for_panic {
 
     my ($panic) = grep (/PANIC/, @output);
     return unless defined $panic;
-
+	
     print "Kernel panic in $run: ", substr ($panic, index ($panic, "PANIC")),
       "\n";
 

@@ -1,6 +1,7 @@
 #ifndef USERPROG_PROCESS_H
 #define USERPROG_PROCESS_H
 #include "threads/thread.h"
+#include "filesys/off_t.h"
 
 tid_t process_create_initd (const char *file_name);
 tid_t process_fork (const char *name);

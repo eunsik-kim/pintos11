@@ -59,11 +59,6 @@ vm_alloc_page_with_initializer (enum vm_type type, void *upage, bool writable,
 		else 
 			PANIC("Initializer not implemented ");
 
-		if ((type & VM_FILE) && !(type & VM_MMAP) && writable) { // bss segment
-			initializer = anon_initializer;	
-			type &= ~VM_FILE;
-			type |= VM_ANON | VM_BSS;
-		}
 		type = (writable & 1) ? type | VM_WRITABLE : type;
 		type = (type & VM_STACK) ? type |= VM_DIRTY : type;
 		uninit_new(new_page, pg_round_down(upage), init, type, aux, initializer);

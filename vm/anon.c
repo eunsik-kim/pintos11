@@ -88,7 +88,7 @@ anon_swap_in (struct page *page, void *kva) {
 
 	size_t readb = 0;
 	size_t size = PGSIZE;
-	size_t disk_sector = page->anon.disk_sector;
+	disk_sector_t disk_sector = page->anon.disk_sector;
 	while (size) {	// size_left must be divided 512
 		int size_left = (size > DISK_SECTOR_SIZE) ? DISK_SECTOR_SIZE : size;
 		disk_read(swap_disk, disk_sector++, page->frame->kva + readb);
@@ -136,7 +136,7 @@ anon_swap_out (struct page *page) {
 	// similar to inode_write_at except for fixed size(PGSIZE)
 	size_t writeb = 0;
 	size_t size = PGSIZE;
-	size_t disk_sector = bit_idx * 8;
+	disk_sector_t disk_sector = bit_idx * 8;
 	while (size) {	// size_left must be divided 512
 		size_t size_left = (size > DISK_SECTOR_SIZE) ? DISK_SECTOR_SIZE : size;
 		disk_write(swap_disk, disk_sector++, page->frame->kva + writeb);

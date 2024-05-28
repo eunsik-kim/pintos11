@@ -5,25 +5,56 @@
 #include "filesys/filesys.h"
 #include "filesys/inode.h"
 #include "threads/malloc.h"
+#include "filesys/fat.h"
+#include "threads/thread.h"
+#include <string.h>
+#include "filesys/inode.h"
 
 /* A directory. */
 struct dir {
 	struct inode *inode;                /* Backing store. */
 	off_t pos;                          /* Current position. */
+	struct lock d_lock;
 };
 
 /* A single directory entry. */
-struct dir_entry {
+struct dir_entry { 	
 	disk_sector_t inode_sector;         /* Sector number of header. */
 	char name[NAME_MAX + 1];            /* Null terminated file name. */
 	bool in_use;                        /* In use or free? */
 };
 
+static bool
+lookup (const struct dir *dir, const char *name,
+		struct dir_entry *ep, off_t *ofsp);
+
 /* Creates a directory with space for ENTRY_CNT entries in the
  * given SECTOR.  Returns true if successful, false on failure. */
 bool
-dir_create (disk_sector_t sector, size_t entry_cnt) {
-	return inode_create (sector, entry_cnt * sizeof (struct dir_entry));
+dir_create (disk_sector_t sector, size_t entry_cnt, disk_sector_t parent_sector) {
+	bool flg = inode_create (sector, entry_cnt * sizeof (struct dir_entry));
+	if (!flg)
+		return false;
+	struct inode *inode = inode_open(sector);
+	// checking dir
+	inode->data.isdir = 1;
+	disk_write (filesys_disk, sector, &inode->data);
+	struct dir_entry e;
+	off_t ofs;
+
+	for (int i=0; i<2; i++) {
+		/* Write slot. */
+		e.in_use = true;
+		if (i == 0) {
+			strlcpy (e.name, ".", 2);
+			e.inode_sector = sector;
+		} else {
+			strlcpy (e.name, "..", 3);
+			e.inode_sector = parent_sector;
+		}	
+		flg = inode_write_at (inode, &e, sizeof e,  i * 20) == sizeof e;
+	}
+	return flg;
 }
 
 /* Opens and returns the directory for the given INODE, of which
@@ -34,6 +65,7 @@ dir_open (struct inode *inode) {
 	if (inode != NULL && dir != NULL) {
 		dir->inode = inode;
 		dir->pos = 0;
+		lock_init(&dir->d_lock);
 		return dir;
 	} else {
 		inode_close (inode);
@@ -46,7 +78,13 @@ dir_open (struct inode *inode) {
  * Return true if successful, false on failure. */
 struct dir *
 dir_open_root (void) {
+#ifndef EFILESYS
 	return dir_open (inode_open (ROOT_DIR_SECTOR));
+#else
+	struct inode *root = inode_open (cluster_to_sector(ROOT_DIR_CLUSTER));
+	root->cwd_cnt++;
+	return dir_open (root);
+#endif
 }
 
 /* Opens and returns a new directory for the same inode as DIR.
@@ -71,6 +109,72 @@ dir_get_inode (struct dir *dir) {
 	return dir->inode;
 }
 
+/* 절대경로 or 상대경로를 받아와서 경로중 마지막 dir과 file_name을 반환하는 함수 */
+struct dir *find_dir(char *origin_paths, char *file_name) {
+	ASSERT (origin_paths != NULL);
+
+	size_t ofs;
+	struct dir_entry e;
+	struct inode *inode = NULL;
+	char *paths, *rest_path, *cur_path, *next_path;
+	struct thread *cur = thread_current();
+	struct dir *next_dir, *cwd = thread_current()->cwd;
+
+	// save due to strtok_r
+	paths = palloc_get_page(0);
+	strlcpy(paths, origin_paths, strlen(origin_paths) + 1);
+
+	if (cwd && paths[0] != '/')    // 상대경로
+		next_dir = dir_reopen(cwd);
+	else
+		next_dir = dir_open_root();		
+
+	// parse paths
+	cur_path = strtok_r(paths, "/", &rest_path);
+	if ((cwd && paths[0] != '/') && !cur_path) { // if relative path is null_path
+		dir_close(next_dir);
+		palloc_free_page(paths);
+		return NULL;
+	}
+
+	if (!cur_path)	// null indicates current directory
+		cur_path = ".";
+
+	if (strlen(cur_path) > NAME_MAX)	// validate file name
+		return NULL;
+
+	next_path = strtok_r(NULL, "/", &rest_path);
+
+	while (next_path) {
+		if (strlen(next_path) > NAME_MAX)	// validate file name
+			return NULL;
+
+		if (!dir_lookup(next_dir, cur_path, &inode)) {	// find sub dir
+			dir_close(next_dir);
+			palloc_free_page(paths);
+			return NULL;
+		}
+		dir_close(next_dir);
+		next_dir = dir_open(inode);
+		if (!next_dir->inode->data.isdir) { 	// wrong path
+			dir_close(next_dir);
+			palloc_free_page(paths);
+			return NULL;
+		}		
+
+		cur_path = next_path;
+		if (strstr(rest_path, "/")) {
+			next_path = strtok_r(NULL, "/", &rest_path);
+			if (!next_path)		// null indicates current directory
+				cur_path =".";
+		} else
+			next_path = strtok_r(NULL, "/", &rest_path);
+	}
+	strlcpy(file_name, cur_path, strnlen(cur_path, NAME_MAX) + 1);
+	palloc_free_page(paths);
+	return next_dir;
+}
+
 /* Searches DIR for a file with the given NAME.
  * If successful, returns true, sets *EP to the directory entry
  * if EP is non-null, and sets *OFSP to the byte offset of the
@@ -84,7 +188,7 @@ lookup (const struct dir *dir, const char *name,
 
 	ASSERT (dir != NULL);
 	ASSERT (name != NULL);
-
+	symlink_change_dir(dir->inode);
 	for (ofs = 0; inode_read_at (dir->inode, &e, sizeof e, ofs) == sizeof e;
 			ofs += sizeof e)
 		if (e.in_use && !strcmp (name, e.name)) {
@@ -125,13 +229,13 @@ dir_lookup (const struct dir *dir, const char *name,
  * error occurs. */
 bool
 dir_add (struct dir *dir, const char *name, disk_sector_t inode_sector) {
+	lock_acquire(&dir->d_lock);
 	struct dir_entry e;
 	off_t ofs;
 	bool success = false;
-
+	
 	ASSERT (dir != NULL);
 	ASSERT (name != NULL);
-
 	/* Check NAME for validity. */
 	if (*name == '\0' || strlen (name) > NAME_MAX)
 		return false;
@@ -152,13 +256,14 @@ dir_add (struct dir *dir, const char *name, disk_sector_t inode_sector) {
 		if (!e.in_use)
 			break;
 
-	/* Write slot. */
+	/* Write slot. include folder growth */
 	e.in_use = true;
 	strlcpy (e.name, name, sizeof e.name);
 	e.inode_sector = inode_sector;
 	success = inode_write_at (dir->inode, &e, sizeof e, ofs) == sizeof e;
 
 done:
+	lock_release(&dir->d_lock);
 	return success;
 }
 
@@ -167,14 +272,14 @@ done:
  * which occurs only if there is no file with the given NAME. */
 bool
 dir_remove (struct dir *dir, const char *name) {
-	struct dir_entry e;
+	lock_acquire(&dir->d_lock);
+	struct dir_entry e, temp_e;
 	struct inode *inode = NULL;
 	bool success = false;
-	off_t ofs;
+	off_t temp_ofs, ofs;
 
 	ASSERT (dir != NULL);
 	ASSERT (name != NULL);
-
 	/* Find directory entry. */
 	if (!lookup (dir, name, &e, &ofs))
 		goto done;
@@ -184,6 +289,17 @@ dir_remove (struct dir *dir, const char *name) {
 	if (inode == NULL)
 		goto done;
 
+	/* directory라면 cwd_cnt가 1이상이거나 비어있지 않으면 삭제 금지 */
+	if (inode->data.isdir & 1) {
+		if ((inode->cwd_cnt > 0))
+			goto done;
+
+		for (temp_ofs = 40; inode_read_at (inode, &temp_e, sizeof temp_e, temp_ofs) == sizeof temp_e;		
+				temp_ofs += sizeof temp_e)	// . and .. 제외
+			if (temp_e.in_use)
+				goto done;
+	}
+		
 	/* Erase directory entry. */
 	e.in_use = false;
 	if (inode_write_at (dir->inode, &e, sizeof e, ofs) != sizeof e)
@@ -195,6 +311,7 @@ dir_remove (struct dir *dir, const char *name) {
 
 done:
 	inode_close (inode);
+	lock_release(&dir->d_lock);
 	return success;
 }
 
@@ -204,13 +321,59 @@ done:
 bool
 dir_readdir (struct dir *dir, char name[NAME_MAX + 1]) {
 	struct dir_entry e;
-
+	lock_acquire(&dir->d_lock);
 	while (inode_read_at (dir->inode, &e, sizeof e, dir->pos) == sizeof e) {
 		dir->pos += sizeof e;
+		if (!strcmp(".", e.name) || !strcmp("..", e.name))
+			continue;
+
 		if (e.in_use) {
 			strlcpy (name, e.name, NAME_MAX + 1);
+			lock_release(&dir->d_lock);
 			return true;
 		}
 	}
+	lock_release(&dir->d_lock);
 	return false;
+}
+
+void cwd_cnt_up(struct dir *dir) {
+	dir->inode->cwd_cnt++;
+}
+
+void cwd_cnt_down(struct dir *dir) {
+	dir->inode->cwd_cnt--;
+}
+
+/* read나 write하기전 target file로 진--화
+ dir는 안에 file이 탑승하기 때문에 변--신 해제를 못함(by persistence test) */
+bool symlink_change_dir(struct inode* inode) {
+	if (!checklink(inode->data.isdir))
+		return false;
+	
+	char target[512];
+	disk_sector_t sector = inode->data.start;
+	
+	/* chaining until finding target file */
+	while (sector) {
+		disk_read(filesys_disk, sector, target);
+		void *file_entity = filesys_open(target);
+		if (!file_entity)
+			PANIC("No such file or directory");
+
+		struct dir *dir = getptr(file_entity);
+		if (checklink(dir->inode->data.isdir))
+			sector = dir->inode->data.start;
+		else {
+			sector = 0;
+			disk_write(filesys_disk, inode->sector, &dir->inode->data);
+			memcpy(&inode->data, &dir->inode->data, sizeof(struct inode_disk)); 
+		}	
+
+		if (checkdir(file_entity)) 
+			dir_close(getptr(dir));
+		else
+			file_close(dir);
+	}
+	return true;
 }
