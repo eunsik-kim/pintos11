@@ -19,6 +19,7 @@ tid_t page_cache_workerd;
 void
 pagecache_init (void) {
 	/* TODO: Create a worker daemon for page cache with page_cache_kworkerd */
+	thread_create("page_cache_workerd", PRI_DEFAULT, page_cache_kworkerd, NULL);
 }
 
 /* Initialize the page cache */

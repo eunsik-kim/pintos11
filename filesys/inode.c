@@ -430,14 +430,16 @@ off_t
 inode_read_at (struct inode *inode, void *buffer_, off_t size, off_t offset) {
 	ASSERT(inode->data.magic == INODE_MAGIC);
 	symlink_change_file(inode);
-
+	off_t origin_size = size, origin_offset = offset;
 	cluster_t clst;
 	off_t bytes_read = 0;
 	uint8_t *bounce = NULL;
 	uint8_t *buffer = buffer_;
 	disk_sector_t sector_idx = byte_to_sector (inode, offset);
+	lock_acquire(&inode->w_lock);	
 	int len = inode_length (inode);
-	off_t origin_size = size, origin_offset = offset;
+	lock_release(&inode->w_lock);	
+
 	while (size > 0) {
 		/* Disk sector to read, starting byte offset within sector. */
 		int sector_ofs = offset % DISK_SECTOR_SIZE;
@@ -473,16 +475,11 @@ inode_read_at (struct inode *inode, void *buffer_, off_t size, off_t offset) {
 		bytes_read += chunk_size;
 
 		// find next sector
-		clst = sector_to_cluster(sector_idx);
-		if ((clst = fat_get(clst)) == EOChain)
+		if ((clst = fat_get(sector_to_cluster(sector_idx))) == EOChain)
 			break;
 		sector_idx = cluster_to_sector(clst);
 	}
 	free (bounce);
-
-	// check file growth have been occured
-	if (len != inode_length (inode))
-		return inode_read_at(inode, buffer_, origin_size, origin_offset);
 	
 	return bytes_read;
 }
@@ -502,74 +499,11 @@ inode_write_at (struct inode *inode, const void *buffer_, off_t size, off_t offs
 	if (inode->deny_write_cnt)
 		return 0;
 
+	cluster_t clst;
 	uint8_t *bounce = NULL;
 	const uint8_t *buffer = buffer_;
-	disk_sector_t sector, sector_idx;
-	cluster_t clst, last_clst, off_clst;
-	off_t create_cnt, add_length = offset + size - inode->data.length;
-	off_t bytes_written = 0, res = inode->data.length % DISK_SECTOR_SIZE;
-	off_t temp = ((res + add_length) / DISK_SECTOR_SIZE - ((res + add_length) % DISK_SECTOR_SIZE == 0));
-	// file growth case 1: no sector to write, case 2: not enough place to write
-	if ((inode->data.length == 0) || (!res && add_length > 0) || temp > 0) {
-		lock_acquire(&inode->w_lock);		// file growth is atomic action
-		if (inode->data.length == 0) {	// case 1
-			clst = last_clst = sector_to_cluster(inode->data.start);	
-			create_cnt = bytes_to_sectors(add_length);		
-		} else {	// case 2
-			if (!res && add_length > 0) {
-				clst = last_clst = sector_to_cluster(byte_to_sector2(inode, inode->data.length));
-				create_cnt = bytes_to_sectors(add_length);
-			} else{
-				clst = last_clst = sector_to_cluster(byte_to_sector(inode, inode->data.length));
-				create_cnt = temp;		
-			}
-		}
-		
-		// append cluster chain 
-		while (clst && create_cnt--) 
-			clst = fat_create_chain(clst);
-		
-		if (create_cnt > 0 || !clst) {
-			if (inode->data.length != 0)	// case 2
-				fat_remove_chain(fat_get(last_clst), last_clst);
-			else if (fat_get(last_clst) != EOChain)	// case 1, only created chain  
-				fat_remove_chain(fat_get(last_clst), last_clst);
-			lock_release(&inode->w_lock);
-			return false;
-		}
-
-		// case 1, reset start sector 
-		if (inode->data.length == 0)
-			inode->data.start = cluster_to_sector(fat_get(last_clst));
-
-		// update inode struct on disk
-		inode->data.length += add_length;
-		disk_write (filesys_disk, inode->data.target_sector, &inode->data);
-		sector_idx = byte_to_sector(inode, offset);	
-
-		// memset 0 until offset_sector from last_clst behind on disk
-		static char zeros[DISK_SECTOR_SIZE];
-		off_clst = sector_to_cluster(sector_idx);
-		clst = last_clst;
-		while (clst != off_clst) {
-			clst = fat_get(clst);
-			disk_write (filesys_disk, cluster_to_sector(clst), zeros);	
-		}
-		if (last_clst != off_clst)	// careful not to overlap last sector
-			disk_write (filesys_disk, cluster_to_sector(off_clst), zeros);	
-		lock_release(&inode->w_lock);	
-		
-	} else {
-		lock_acquire(&inode->w_lock);		// file growth is atomic action
-		if (add_length > 0) {
-			// update inode struct on disk (not append sector)
-			inode->data.length += add_length;
-			disk_write (filesys_disk, inode->data.target_sector, &inode->data);
-		}
-		sector_idx = byte_to_sector(inode, offset);
-		lock_release(&inode->w_lock);	
-	}
-	int len = inode_length(inode);
+	disk_sector_t sector_idx = file_growth(inode, size, offset);
+	off_t bytes_written = 0, len = inode_length(inode);
 	
 	while (size > 0) {
 		/* Sector to write, starting byte offset within sector. */
@@ -620,6 +554,76 @@ inode_write_at (struct inode *inode, const void *buffer_, off_t size, off_t offs
 	}
 	free (bounce);
 	return bytes_written;
+}
+
+disk_sector_t file_growth(struct inode *inode, off_t size, off_t offset) {
+	disk_sector_t sector, sector_idx;
+	cluster_t clst, last_clst, off_clst;
+	off_t create_cnt, add_length = offset + size - inode->data.length;
+	off_t res = inode->data.length % DISK_SECTOR_SIZE;
+	off_t temp = ((res + add_length) / DISK_SECTOR_SIZE - ((res + add_length) % DISK_SECTOR_SIZE == 0));
+	// file growth case 1: no sector to write, case 2: not enough place to write
+	if ((inode->data.length == 0) || (!res && add_length > 0) || temp > 0) {
+		lock_acquire(&inode->w_lock);	// file growth is atomic action
+		if (inode->data.length == 0) {	// case 1
+			clst = last_clst = sector_to_cluster(inode->data.start);	
+			create_cnt = bytes_to_sectors(add_length);		
+		} else {	// case 2
+			if (!res && add_length > 0) {
+				clst = last_clst = sector_to_cluster(byte_to_sector2(inode, inode->data.length));
+				create_cnt = bytes_to_sectors(add_length);
+			} else{
+				clst = last_clst = sector_to_cluster(byte_to_sector(inode, inode->data.length));
+				create_cnt = temp;		
+			}
+		}
+		
+		// append cluster chain 
+		while (clst && create_cnt--) 
+			clst = fat_create_chain(clst);
+		
+		if (create_cnt > 0 || !clst) {
+			if (inode->data.length != 0)	// case 2
+				fat_remove_chain(fat_get(last_clst), last_clst);
+			else if (fat_get(last_clst) != EOChain)	// case 1, only created chain  
+				fat_remove_chain(fat_get(last_clst), last_clst);
+			lock_release(&inode->w_lock);
+			return false;
+		}
+
+		// case 1, reset start sector 
+		if (inode->data.length == 0)
+			inode->data.start = cluster_to_sector(fat_get(last_clst));
+
+		// update inode struct on disk
+		inode->data.length += add_length;
+		disk_write (filesys_disk, inode->data.target_sector, &inode->data);
+		sector_idx = byte_to_sector(inode, offset);	
+
+		// memset 0 until offset_sector from last_clst behind on disk
+		static char zeros[DISK_SECTOR_SIZE];
+		off_clst = sector_to_cluster(sector_idx);
+		clst = last_clst;
+		while (clst != off_clst) {
+			clst = fat_get(clst);
+			disk_write (filesys_disk, cluster_to_sector(clst), zeros);	
+		}
+		if (last_clst != off_clst)	// careful not to overlap last sector
+			disk_write (filesys_disk, cluster_to_sector(off_clst), zeros);	
+		lock_release(&inode->w_lock);	
+		
+	} else {
+		lock_acquire(&inode->w_lock);	// file growth is atomic action
+		if (add_length > 0) {
+			// update inode struct on disk (not append sector)
+			inode->data.length += add_length;
+			disk_write (filesys_disk, inode->data.target_sector, &inode->data);
+		}
+		sector_idx = byte_to_sector(inode, offset);
+		lock_release(&inode->w_lock);	
+	}
+	
+	return sector_idx;
 }
 
 /* read나 write하기전 target file로 변--신 */

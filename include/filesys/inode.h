@@ -25,6 +25,9 @@ off_t inode_length (const struct inode *);
 bool symlink_change_file(struct inode* inode);
 void file_change_symlink(struct inode* inode);
 
+/* for file growth */
+disk_sector_t file_growth(struct inode *inode, off_t size, off_t offset);
+
 /* On-disk inode.
  * Must be exactly DISK_SECTOR_SIZE bytes long. */
 struct inode_disk {
@@ -42,8 +45,8 @@ struct inode {
 	disk_sector_t sector;               /* Sector number of disk location. */
 	int open_cnt;                       /* Number of openers. */
 	bool removed;                       /* True if deleted, false otherwise. */
-	int deny_write_cnt;                 /* 0: writes ok, >0: deny writes. */
-	int cwd_cnt;						/* checking cwd */
+	uint32_t deny_write_cnt;                 /* 0: writes ok, >0: deny writes. */
+	uint32_t cwd_cnt;						/* checking cwd */
 	struct lock w_lock;					/* for synchronization */
 	struct inode_disk data;             /* Inode content. */
 };
