@@ -18,3 +18,6 @@ project3 -  VIRTUAL MEMORY
 project4 - FILESYS
 
 ![image](https://github.com/eunsik-kim/pintos11/assets/153556378/b7b3115c-df9a-4142-8ce4-7cd196b39775)
+
+watch detail implementaion
+https://eunsik-kim.github.io/posts/WIC-week11-Pintos-FileSystems/
