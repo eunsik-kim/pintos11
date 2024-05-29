@@ -435,10 +435,12 @@ inode_read_at (struct inode *inode, void *buffer_, off_t size, off_t offset) {
 	off_t bytes_read = 0;
 	uint8_t *bounce = NULL;
 	uint8_t *buffer = buffer_;
+	if (inode->w_lock.holder) {
+		lock_acquire(&inode->w_lock);
+		lock_release(&inode->w_lock);
+	} 
 	disk_sector_t sector_idx = byte_to_sector (inode, offset);
-	lock_acquire(&inode->w_lock);	
 	int len = inode_length (inode);
-	lock_release(&inode->w_lock);	
 
 	while (size > 0) {
 		/* Disk sector to read, starting byte offset within sector. */
@@ -613,14 +615,12 @@ disk_sector_t file_growth(struct inode *inode, off_t size, off_t offset) {
 		lock_release(&inode->w_lock);	
 		
 	} else {
-		lock_acquire(&inode->w_lock);	// file growth is atomic action
 		if (add_length > 0) {
 			// update inode struct on disk (not append sector)
 			inode->data.length += add_length;
 			disk_write (filesys_disk, inode->data.target_sector, &inode->data);
 		}
 		sector_idx = byte_to_sector(inode, offset);
-		lock_release(&inode->w_lock);	
 	}
 	
 	return sector_idx;
