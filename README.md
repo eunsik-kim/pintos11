@@ -136,9 +136,6 @@ Thread 생애 주기 2번으로 실행되거나 exec 호출 이후 과정입니�
     2. 그렇게 하였더니 swap out시 프레임이 삭제되어 reference count로 구현이 불가능하였습니다.
     3. 그래서 fork할 때 같은 frame을 참조하는 페이지들은 circular linked list로 연결하여 관리하였고, swap out하는 경우 모든 page들을 한번에 swap out하도록 하였습니다.
     4. 뿐만 아니라 eviction 시 비용이 높으므로 clock algorithm을 약간 수정하여 fork된 page는 eviction할 때 후순위로 설정하였습니다.
-    
-5. **파일 시스템의 동기화 횟수 줄이기**
-    - 파일이 증가하는 경우에만 lock을 걸어 read가 blocking되는 시간을 최소화하도록 구현했습니다.
 
 
 ## outcome
