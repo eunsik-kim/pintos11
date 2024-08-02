@@ -3,6 +3,12 @@
 - 운영체제 kernel의 자원 관리 방법을 프로그래밍 하는 과제, 약 4주간(24.04.27 ~ 24.05.27) 개발
 - C를 사용하여 pintos 과제 중 threads, userprog, virtual memory, filesys 전부 구현[192/193](buffer cache제외)
 
+### 구현 사항
+1. Thread 관리 : 우선순위 thread scheduling과 MLFQ 방법으로 scheduling을 구현
+2. Process 관리 : file 이나 process 관련 system call 모두 14가지 구현, c program의 실행 과정을 구현
+3. Virtual Memory 관리 : program이 사용하는 가상 메모리의 lazy loading과정과 swap in & out을 구현
+4. FAT : FAT(file allocation table) file system 구현, 파일 자동 확장 기능과 soft link 구현
+
 ## 내부 구조
 ### QEMU emulator 실행
 1. OS 시작에 필요한 모든 설정(thread, malloc, paging, timer etc..) 초기화
